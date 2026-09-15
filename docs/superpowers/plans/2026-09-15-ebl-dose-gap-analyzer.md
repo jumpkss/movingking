@@ -391,16 +391,31 @@ def test_fifty_percent_crossing_sits_exactly_at_half_gap():
     assert right_value == pytest.approx(mid, abs=1.0)
 
 
+def half_max_centre(row, i_metal=200.0, i_gap=40.0):
+    """50% 문턱을 지나는 두 지점의 중점으로 갭 중심을 서브픽셀로 잡는다.
+
+    np.argmin을 쓰면 안 된다. 갭 바닥은 erf 전이가 완전히 포화된 평탄부라서
+    (30픽셀 갭, sigma=1.5에서 인덱스 254~257의 4픽셀이 모두 같은 최소값)
+    argmin이 평탄부의 왼쪽 끝을 돌려주고, 참값에서 1.5~2.2픽셀 어긋난다.
+    각도 0에서도 어긋나므로 회전과 무관한 문제다.
+    """
+    mid = (i_metal + i_gap) / 2.0
+    x = np.arange(row.size, dtype=float)
+    lo = int(np.argmin(row))  # 평탄부 어딘가 — 좌우를 가르는 용도로만 쓴다
+    left = np.interp(mid, row[:lo + 1][::-1], x[:lo + 1][::-1])
+    right = np.interp(mid, row[lo:], x[lo:])
+    return (left + right) / 2.0
+
+
 @pytest.mark.parametrize("angle_deg", [0.0, 2.0, 5.0, 10.0])
 def test_rotation_shifts_gap_center_by_tangent(angle_deg):
     img = synth_gap_image(width=512, height=512, gap_nm=30.0, nm_per_px=1.0,
                           angle_deg=angle_deg)
-    rows = [180, 256, 330]
-    observed = [float(np.argmin(img[r])) for r in rows]
-    expected = [gap_center_x_at_row(r, width=512, height=512,
-                                    angle_deg=angle_deg) for r in rows]
-    for obs, exp in zip(observed, expected):
-        assert obs == pytest.approx(exp, abs=1.0)
+    for row in (180, 256, 330):
+        observed = half_max_centre(img[row])
+        expected = gap_center_x_at_row(row, width=512, height=512,
+                                       angle_deg=angle_deg)
+        assert observed == pytest.approx(expected, abs=0.05)
 
 
 def test_noise_is_reproducible_by_seed():
