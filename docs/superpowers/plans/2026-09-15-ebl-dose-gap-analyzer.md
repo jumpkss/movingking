@@ -2850,7 +2850,11 @@ def test_summary_csv_has_one_row_per_roi_with_scale_provenance(tmp_path):
     assert float(row["dose_uC"]) == pytest.approx(320.0)
     assert float(row["nm_per_px"]) == pytest.approx(3.0)
     assert row["scale_source"] == "fei_metadata"
-    assert float(row["mean_nm"]) == pytest.approx(result.mean_nm, abs=1e-6)
+    # CSV는 mean_nm을 소수 3자리로 쓴다. 허용오차는 그 반올림 단위(5e-4)여야
+    # 한다. 더 조이면 구조적으로 실패하고, CSV 자릿수를 늘려 맞추는 것은
+    # 측정이 갖지 않은 정밀도를 보고하는 셈이 된다 — 1~3 nm/px 해상도에서
+    # 0.001 nm는 이미 물리적 의미보다 두 자릿수 이상 세밀하다.
+    assert float(row["mean_nm"]) == pytest.approx(result.mean_nm, abs=5e-4)
     assert int(row["n_valid"]) == result.n_valid
 
 
