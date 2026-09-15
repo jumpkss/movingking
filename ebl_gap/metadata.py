@@ -32,7 +32,10 @@ def parse_ini(text: str) -> dict[str, dict[str, str]]:
     sections: dict[str, dict[str, str]] = {}
     current: dict[str, str] | None = None
     for raw in text.replace("\r\n", "\n").split("\n"):
-        line = raw.strip().lstrip("\x00")
+        # 실제 FEI 파일은 INI 블록 끝을 널 바이트로 채운다. 줄 앞뒤 어디에 붙든
+        # 제거해야 한다 — 값에 붙은 널을 남기면 float() 변환이 실패하고,
+        # PixelWidth가 파일에 분명히 있는데도 MetadataNotFoundError가 난다.
+        line = raw.replace("\x00", "").strip()
         if not line or line.startswith((";", "#")):
             continue
         if line.startswith("[") and line.endswith("]"):
@@ -60,6 +63,17 @@ def read_fei_metadata(path: str | Path) -> dict[str, dict[str, str]]:
                 value = tag.value
                 if isinstance(value, bytes):
                     value = value.decode("latin-1", errors="replace")
+                if isinstance(value, dict):
+                    # tifffile 버전에 따라 태그를 이미 섹션 dict로 파싱해서 준다.
+                    # 이 경우를 처리하지 않으면 폴백이 통째로 죽은 코드가 된다.
+                    parsed = {
+                        str(k): {str(kk): str(vv) for kk, vv in v.items()}
+                        for k, v in value.items()
+                        if isinstance(v, dict)
+                    }
+                    if parsed:
+                        return parsed
+                    continue
                 if isinstance(value, str) and "[" in value:
                     parsed = parse_ini(value)
                     if parsed:

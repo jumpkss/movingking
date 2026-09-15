@@ -95,6 +95,31 @@ def test_read_fei_metadata_round_trips_through_a_real_tiff(tmp_path):
     assert float(meta["Scan"]["PixelWidth"]) == pytest.approx(3.0517578125e-009)
 
 
+def test_parse_ini_strips_null_byte_padding():
+    """실제 FEI 파일은 INI 블록 끝을 널 바이트로 채운다.
+
+    값에 붙은 널을 떼지 않으면 float() 변환이 실패하고, PixelWidth가 파일에
+    분명히 있는데도 MetadataNotFoundError가 난다. 픽스처만으로는 안 드러나는
+    실제 하드웨어 출력의 차이다.
+    """
+    meta = parse_ini("[Scan]\nPixelWidth=3.0e-009" + "\x00" * 20)
+    assert meta["Scan"]["PixelWidth"] == "3.0e-009"
+    assert float(meta["Scan"]["PixelWidth"]) == pytest.approx(3.0e-9)
+
+
+def test_tag_fallback_works_when_fei_metadata_is_empty(tmp_path, monkeypatch):
+    """tifffile이 fei_metadata를 비워 줄 때 태그 직접 읽기가 실제로 동작해야 한다.
+
+    이 경로는 실제 Inspect F 파일이 픽스처와 다를 때를 위한 안전망인데,
+    강제로 발동시키는 테스트가 없으면 죽은 코드인지 알 수 없다.
+    """
+    path = write_fei_tiff(tmp_path / "fallback_300uC.tif")
+    monkeypatch.setattr(tifffile.TiffFile, "fei_metadata",
+                        property(lambda self: None))
+    meta = read_fei_metadata(path)
+    assert float(meta["Scan"]["PixelWidth"]) == pytest.approx(3.0517578125e-9)
+
+
 def test_read_fei_metadata_raises_on_a_plain_tiff(tmp_path):
     path = tmp_path / "plain.tif"
     tifffile.imwrite(path, np.zeros((16, 16), dtype=np.uint8))
