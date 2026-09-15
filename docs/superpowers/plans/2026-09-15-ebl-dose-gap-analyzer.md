@@ -1440,15 +1440,19 @@ def test_std_is_none_with_a_single_valid_line():
 
 
 def test_mark_outliers_relabels_far_lines_and_leaves_the_rest():
+    """값이 전부 같아 MAD가 0이어도, 분해능이 척도가 되어 판정이 살아 있어야 한다.
+
+    여기서 판정을 포기하면 이상치 제거가 가장 필요한 상황에서 기능이 꺼진다.
+    """
     lines = valid_lines([50.0] * 20 + [200.0])
-    marked = mark_outliers(lines)
+    marked = mark_outliers(lines, resolution_nm=1.0)
     assert marked[-1].status == "outlier"
-    assert "MAD" in marked[-1].reason
+    assert "척도" in marked[-1].reason
     assert all(m.status == "valid" for m in marked[:-1])
 
 
-def test_mark_outliers_does_nothing_when_mad_is_zero():
-    """모든 값이 같으면 MAD가 0이라 편차 판정이 불가능하다. 전부 남겨야 한다."""
+def test_mark_outliers_does_nothing_without_any_scale():
+    """MAD도 0이고 분해능도 모르면 판정 기준 자체가 없다. 전부 남겨야 한다."""
     marked = mark_outliers(valid_lines([50.0] * 10))
     assert all(m.status == "valid" for m in marked)
 
@@ -1460,7 +1464,7 @@ def test_mark_outliers_does_nothing_when_most_values_tie():
     0이라 limit=0과 비교해도 걸리지 않기 때문이다. 일부만 같은 경우가 진짜 함정이고,
     픽셀 양자화 때문에 여러 라인이 같은 nm 값으로 떨어지는 것은 실측에서 흔하다.
     """
-    marked = mark_outliers(valid_lines([50.0] * 9 + [51.0]))
+    marked = mark_outliers(valid_lines([50.0] * 9 + [51.0]), resolution_nm=1.0)
     assert all(m.status == "valid" for m in marked)
 
 
@@ -1543,11 +1547,23 @@ MIN_VALID_LINES = 10
 CV_WARN = 0.20
 
 
-def mark_outliers(lines: list[LineResult], *, mad_k: float = 3.5) -> list[LineResult]:
+def mark_outliers(lines: list[LineResult], *, mad_k: float = 3.5,
+                  resolution_nm: float = 0.0) -> list[LineResult]:
     """valid 라인 중 중앙값에서 크게 벗어난 것을 outlier로 다시 라벨링한다.
 
     표준편차 대신 MAD를 쓰는 이유는, 이상치 자체가 표준편차를 부풀려서 자기 자신을
     정상으로 만들어 버리기 때문이다.
+
+    편차 판정의 척도는 `max(MAD, 측정 분해능)`이다. 둘 중 하나만 쓰면 반쪽이 된다.
+    MAD만 쓰면 값 대부분이 정확히 같을 때(노이즈 없는 이미지, 아주 깨끗한 실측)
+    MAD가 0이 되어 척도가 사라지고, 분해능보다 작은 1픽셀 차이까지 이상치로
+    배제한다. 반대로 그때 판정을 통째로 포기하면 295개가 40 nm이고 5개가 112 nm인
+    상황 — 이상치 제거가 가장 필요한 바로 그 상황 — 에서 기능이 꺼진다. 둘 중 큰
+    쪽을 척도로 쓰면 "측정이 구분할 수 없는 차이는 이상치가 아니다"와 "실제 산포보다
+    크게 벗어나면 이상치다"를 동시에 만족한다.
+
+    `resolution_nm`은 보통 `ScaleInfo.nm_per_px`다. 0이면 분해능을 모른다는 뜻이고,
+    MAD도 0이면 판정 기준 자체가 없으므로 전부 남긴다.
     """
     widths = [ln.width_nm for ln in lines
               if ln.status == "valid" and ln.width_nm is not None]
@@ -1556,10 +1572,11 @@ def mark_outliers(lines: list[LineResult], *, mad_k: float = 3.5) -> list[LineRe
 
     median = float(np.median(widths))
     mad = float(np.median(np.abs(np.asarray(widths) - median)))
-    if mad <= 0.0:
+    scale_nm = max(mad, float(resolution_nm))
+    if scale_nm <= 0.0:
         return list(lines)
 
-    limit = mad_k * mad
+    limit = mad_k * scale_nm
     out: list[LineResult] = []
     for ln in lines:
         if ln.status == "valid" and ln.width_nm is not None \
@@ -1570,7 +1587,8 @@ def mark_outliers(lines: list[LineResult], *, mad_k: float = 3.5) -> list[LineRe
                 flags=frozenset(),
                 reason=(f"중앙값 {median:.2f}nm에서 "
                         f"{abs(ln.width_nm - median):.2f}nm 벗어남 "
-                        f"(> {mad_k:g} x MAD {mad:.2f}nm)"),
+                        f"(> {mad_k:g} x 척도 {scale_nm:.2f}nm, "
+                        f"MAD {mad:.2f}nm / 분해능 {resolution_nm:.2f}nm)"),
             ))
         else:
             out.append(ln)
@@ -1944,7 +1962,8 @@ def measure_roi(
             reason=reason,
         ))
 
-    lines = mark_outliers(lines, mad_k=params.mad_k)
+    lines = mark_outliers(lines, mad_k=params.mad_k,
+                          resolution_nm=scale.nm_per_px)
     return summarize(lines, scale=scale, angle_deg=angle_deg,
                      extra_warnings=tuple(extra_warnings))
 ```
