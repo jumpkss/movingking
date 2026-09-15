@@ -25,13 +25,21 @@ def test_survives_noise_that_breaks_some_rows():
 
 
 def test_theil_sen_is_not_dragged_by_a_few_corrupted_rows():
-    """최소자승이라면 끌려갈 상황에서 Theil-Sen은 버텨야 한다."""
+    """최소자승이라면 끌려갈 상황에서 Theil-Sen은 버텨야 한다.
+
+    손상된 행이 analyze_profile 단계에서 걸러지면 회귀에 도달하지 못하고, 그러면
+    최소자승으로 바꿔도 이 테스트가 통과한다 — 아무것도 검증하지 못한다는 뜻이다.
+    그래서 대비를 유지한 채 갭 위치만 60픽셀 옮긴다. 에지는 정상적으로 검출되고
+    회귀에 진짜 이상치로 들어간다. ROI 맨 위 20행을 옮기는 것은 지렛대 효과를
+    키우기 위해서다 — 최소자승이라면 기울기가 3도에서 약 -1.3도까지 끌려간다.
+    """
     img = synth_gap_image(width=512, height=512, gap_nm=40.0, nm_per_px=1.0,
                           angle_deg=3.0)
-    img[150:160, :] = 200.0  # 10개 행을 통째로 금속으로 덮는다
-    img[300:310, 300:] = 40.0  # 10개 행의 오른쪽 절반을 어둡게 만든다
+    img[106:126] = np.roll(img[106:126], 60, axis=1)
     roi = Roi(106, 106, 405, 405)
-    estimated, _ = estimate_angle_deg(img, roi)
+    estimated, n_rows = estimate_angle_deg(img, roi)
+    # 손상 행이 실제로 회귀에 들어갔는지 확인한다. 걸러졌다면 이 테스트는 무의미하다.
+    assert n_rows >= 290
     assert estimated == pytest.approx(3.0, abs=0.5)
 
 
