@@ -1740,7 +1740,9 @@ def test_locally_filled_rows_do_not_drag_the_mean():
     img[200:205, 240:280] = 200.0  # 5개 행의 갭을 금속으로 메운다
     result = measure_roi(img, ROI, SCALE)
     assert result.mean_nm == pytest.approx(40.0, abs=1.0)
-    assert result.n_short == 5  # 메워진 행은 short로 잡힌다
+    # 메워진 행은 에지가 검출되긴 하지만 폭이 크게 어긋나고, mark_outliers의 MAD
+    # 검사에서 outlier로 재분류된다. outlier는 UNCERTAIN_STATUSES에 속한다.
+    assert result.n_uncertain == 5
     assert result.n_valid + result.n_short + result.n_uncertain == 300
 
 
@@ -2084,6 +2086,31 @@ def test_read_fei_metadata_round_trips_through_a_real_tiff(tmp_path):
     assert meta["Scan"]["PixelWidth"] == "3.0517578125e-009"
 
 
+def test_parse_ini_strips_null_byte_padding():
+    """실제 FEI 파일은 INI 블록 끝을 널 바이트로 채운다.
+
+    값에 붙은 널을 떼지 않으면 float() 변환이 실패하고, PixelWidth가 파일에
+    분명히 있는데도 MetadataNotFoundError가 난다. 픽스처만으로는 안 드러나는
+    실제 하드웨어 출력의 차이다.
+    """
+    meta = parse_ini("[Scan]\nPixelWidth=3.0e-009" + "\x00" * 20)
+    assert meta["Scan"]["PixelWidth"] == "3.0e-009"
+    assert float(meta["Scan"]["PixelWidth"]) == pytest.approx(3.0e-9)
+
+
+def test_tag_fallback_works_when_fei_metadata_is_empty(tmp_path, monkeypatch):
+    """tifffile이 fei_metadata를 비워 줄 때 태그 직접 읽기가 실제로 동작해야 한다.
+
+    이 경로는 실제 Inspect F 파일이 픽스처와 다를 때를 위한 안전망인데,
+    강제로 발동시키는 테스트가 없으면 죽은 코드인지 알 수 없다.
+    """
+    path = write_fei_tiff(tmp_path / "fallback_300uC.tif")
+    monkeypatch.setattr(tifffile.TiffFile, "fei_metadata",
+                        property(lambda self: None))
+    meta = read_fei_metadata(path)
+    assert float(meta["Scan"]["PixelWidth"]) == pytest.approx(3.0517578125e-9)
+
+
 def test_read_fei_metadata_raises_on_a_plain_tiff(tmp_path):
     path = tmp_path / "plain.tif"
     tifffile.imwrite(path, np.zeros((16, 16), dtype=np.uint8))
@@ -2133,7 +2160,10 @@ def parse_ini(text: str) -> dict[str, dict[str, str]]:
     sections: dict[str, dict[str, str]] = {}
     current: dict[str, str] | None = None
     for raw in text.replace("\r\n", "\n").split("\n"):
-        line = raw.strip().lstrip("\x00")
+        # 실제 FEI 파일은 INI 블록 끝을 널 바이트로 채운다. 줄 앞뒤 어디에 붙든
+        # 제거해야 한다 — 값에 붙은 널을 남기면 float() 변환이 실패하고,
+        # PixelWidth가 파일에 분명히 있는데도 MetadataNotFoundError가 난다.
+        line = raw.replace("\x00", "").strip()
         if not line or line.startswith((";", "#")):
             continue
         if line.startswith("[") and line.endswith("]"):
@@ -2161,6 +2191,17 @@ def read_fei_metadata(path: str | Path) -> dict[str, dict[str, str]]:
                 value = tag.value
                 if isinstance(value, bytes):
                     value = value.decode("latin-1", errors="replace")
+                if isinstance(value, dict):
+                    # tifffile 버전에 따라 태그를 이미 섹션 dict로 파싱해서 준다.
+                    # 이 경우를 처리하지 않으면 폴백이 통째로 죽은 코드가 된다.
+                    parsed = {
+                        str(k): {str(kk): str(vv) for kk, vv in v.items()}
+                        for k, v in value.items()
+                        if isinstance(v, dict)
+                    }
+                    if parsed:
+                        return parsed
+                    continue
                 if isinstance(value, str) and "[" in value:
                     parsed = parse_ini(value)
                     if parsed:
@@ -2234,7 +2275,7 @@ def databar_top_row(meta: dict[str, dict[str, str]],
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_metadata.py -v`
-Expected: PASS (10 passed)
+Expected: PASS (12 passed)
 
 `test_read_fei_metadata_round_trips_through_a_real_tiff`가 실패하면, 설치된 tifffile 버전이 `fei_metadata`를 어떻게 노출하는지 확인한다: `python -c "import tifffile; print(tifffile.__version__)"`. 태그 직접 읽기 폴백이 있으므로 `fei_metadata`가 None이어도 통과해야 한다.
 
@@ -4171,13 +4212,15 @@ git commit -m "feat: add dose-gap curve plot with short-dose markers"
 
 FEI 메타데이터가 없는 이미지에서 스케일을 확정하는 창이다. 실제 Inspect F 파일을 확보하기 전에는 이 경로가 실사용의 주 경로가 될 수 있으므로 제대로 만든다.
 
+**자동 검출은 조용히 틀릴 수 있다.** `detect_scalebar`는 데이터바에서 가장 긴 밝은 수평 런을 고르는데, 실제 SEM 데이터바에는 HV·WD·배율·파일명이 밝은 텍스트로 들어간다. 그 텍스트 블록이 막대보다 긴 런을 만들면 검출기는 아무 신호 없이 텍스트 좌표를 돌려준다(60px 막대와 150px 텍스트 블록으로 실증됨). 이것은 스펙이 OCR을 거부한 이유와 **정확히 같은 실패 방식**이다. 그래서 이 창은 검출 결과를 그냥 쓰지 않는다: 어디서 찾았는지 좌표로 보여주고, 사용자가 명시적으로 확인해야만 자동 경로를 쓴다. 사용자가 직접 잰 픽셀 거리를 넣은 경우는 사람이 이미 본 것이므로 확인이 필요 없다.
+
 **Files:**
 - Create: `ebl_gap_gui/calibration.py`
 - Test: `tests/test_gui_calibration.py`
 
 **Interfaces:**
 - Consumes: `detect_scalebar`, `scale_from_scalebar`, `scale_from_two_points` (Task 10), `ScaleInfo` (Task 1)
-- Produces: `CalibrationDialog(QDialog)` — 생성자 `(pixels, databar_top=None, parent=None)`; 메서드 `detected_length_px() -> int | None`, `set_length(value, unit)`, `set_manual_pixels(distance_px)`, `scale_info() -> ScaleInfo | None`; 상수 `UNIT_FACTORS`
+- Produces: `CalibrationDialog(QDialog)` — 생성자 `(pixels, databar_top=None, parent=None)`; 메서드 `detected_length_px() -> int | None`, `summary_text() -> str`, `set_length(value, unit)`, `set_manual_pixels(distance_px)`, `confirm_detection(checked)`, `scale_info() -> ScaleInfo | None`; 상수 `UNIT_FACTORS`
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -4217,6 +4260,7 @@ def test_dialog_reports_no_detection_on_a_plain_image(qapp):
 def test_scale_from_detected_bar_and_entered_length(qapp):
     dialog = CalibrationDialog(databar_image(), databar_top=884)
     dialog.set_length(1.0, "µm")
+    dialog.confirm_detection(True)
     scale = dialog.scale_info()
     assert scale.nm_per_px == pytest.approx(10.0, rel=0.05)
     assert scale.source == "scalebar_auto"
@@ -4225,10 +4269,31 @@ def test_scale_from_detected_bar_and_entered_length(qapp):
 def test_nanometre_unit_is_used_as_entered(qapp):
     dialog = CalibrationDialog(databar_image(), databar_top=884)
     dialog.set_length(500.0, "nm")
+    dialog.confirm_detection(True)
     assert dialog.scale_info().nm_per_px == pytest.approx(5.0, rel=0.05)
 
 
-def test_manual_pixel_distance_overrides_the_detected_bar(qapp):
+def test_detected_bar_is_not_used_until_the_user_confirms_it(qapp):
+    """자동 검출은 데이터바의 밝은 텍스트를 막대로 오인할 수 있다.
+
+    스펙이 OCR을 거부한 이유와 같은 실패 방식이므로, 확인 없이는 쓰지 않는다.
+    """
+    dialog = CalibrationDialog(databar_image(), databar_top=884)
+    dialog.set_length(1.0, "µm")
+    assert dialog.scale_info() is None
+    dialog.confirm_detection(True)
+    assert dialog.scale_info().source == "scalebar_auto"
+
+
+def test_summary_tells_the_user_where_the_bar_was_found(qapp):
+    """길이만 보여주면 잘못 잡았는지 알 수 없다. 위치를 보여줘야 확인이 가능하다."""
+    text = CalibrationDialog(databar_image(), databar_top=884).summary_text()
+    assert "행" in text
+    assert "60" in text  # 막대 시작 x 좌표
+
+
+def test_manual_pixel_distance_needs_no_confirmation(qapp):
+    """사람이 직접 잰 거리는 이미 눈으로 확인한 값이다."""
     dialog = CalibrationDialog(databar_image(), databar_top=884)
     dialog.set_length(1.0, "µm")
     dialog.set_manual_pixels(200.0)
@@ -4266,6 +4331,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -4298,13 +4364,23 @@ class CalibrationDialog(QDialog):
         self._manual_px: float | None = None
         self._length_entered = False
 
-        if self._detected_px is None:
+        if hit is None:
             summary = ("스케일바를 자동으로 찾지 못했습니다. "
                        "이미지에서 두 점을 찍어 픽셀 거리를 입력하세요.")
         else:
-            summary = f"스케일바 막대를 {self._detected_px} px로 검출했습니다."
+            # 어디서 찾았는지 반드시 보여준다. 데이터바의 밝은 텍스트가 막대보다 긴
+            # 런을 만들면 검출기가 아무 신호 없이 텍스트 좌표를 돌려주기 때문이다.
+            summary = (
+                f"스케일바 막대를 {hit.length_px} px로 검출했습니다 "
+                f"(행 {hit.row}, x {hit.x0}~{hit.x1}). "
+                "데이터바의 밝은 텍스트를 막대로 잘못 잡을 수 있으니 "
+                "위치가 맞는지 확인한 뒤 아래를 체크하세요."
+            )
         self._summary = QLabel(summary)
         self._summary.setWordWrap(True)
+
+        self._confirm = QCheckBox("검출된 막대가 맞습니다")
+        self._confirm.setEnabled(hit is not None)
 
         self._length = QDoubleSpinBox()
         self._length.setDecimals(4)
@@ -4332,11 +4408,19 @@ class CalibrationDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._summary)
+        layout.addWidget(self._confirm)
         layout.addLayout(form)
         layout.addWidget(buttons)
 
     def detected_length_px(self) -> int | None:
         return self._detected_px
+
+    def summary_text(self) -> str:
+        return self._summary.text()
+
+    def confirm_detection(self, checked: bool) -> None:
+        """검출된 막대가 맞다고 사용자가 확인한다."""
+        self._confirm.setChecked(bool(checked))
 
     def set_length(self, value: float, unit: str) -> None:
         self._length.setValue(float(value))
@@ -4351,7 +4435,11 @@ class CalibrationDialog(QDialog):
         return self._length.value() * UNIT_FACTORS[self._unit.currentText()]
 
     def scale_info(self) -> ScaleInfo | None:
-        """입력이 충분하면 ScaleInfo를, 아니면 None을 돌려준다."""
+        """입력이 충분하면 ScaleInfo를, 아니면 None을 돌려준다.
+
+        자동 검출 경로는 사용자가 확인 체크를 해야만 쓴다. 직접 잰 픽셀 거리는
+        사람이 이미 이미지를 보고 잰 값이므로 별도 확인이 필요 없다.
+        """
         length_nm = self.length_nm()
         if not self._length_entered or length_nm <= 0:
             return None
@@ -4360,7 +4448,7 @@ class CalibrationDialog(QDialog):
         if manual_px > 0:
             return scale_from_two_points((0.0, 0.0), (manual_px, 0.0), length_nm)
 
-        if self._detected_px:
+        if self._detected_px and self._confirm.isChecked():
             return scale_from_scalebar(float(self._detected_px), length_nm)
         return None
 ```
@@ -4368,7 +4456,7 @@ class CalibrationDialog(QDialog):
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_calibration.py -v`
-Expected: PASS (8 passed)
+Expected: PASS (10 passed)
 
 - [ ] **Step 5: 커밋**
 
