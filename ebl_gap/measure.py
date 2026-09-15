@@ -102,6 +102,7 @@ def measure_roi(
             reason=reason,
         ))
 
-    lines = mark_outliers(lines, mad_k=params.mad_k)
+    lines = mark_outliers(lines, mad_k=params.mad_k,
+                          resolution_nm=scale.nm_per_px)
     return summarize(lines, scale=scale, angle_deg=angle_deg,
                      extra_warnings=tuple(extra_warnings))
