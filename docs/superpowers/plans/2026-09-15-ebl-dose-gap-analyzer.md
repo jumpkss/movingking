@@ -57,7 +57,7 @@
 
 **Interfaces:**
 - Consumes: 없음 (첫 태스크)
-- Produces: `ScaleInfo(nm_per_px: float, source: str)`, `Roi(x0: int, y0: int, x1: int, y1: int)` (속성 `width`, `height`, `cx`, `cy`), `LineResult(row, left_px, right_px, width_px, width_nm, status, flags, reason)` (속성 `counts_in_stats`), `RoiResult(mean_nm, std_nm, n_valid, n_short, n_uncertain, n_low_confidence, angle_deg, lines, warnings, scale)`, `ImageRecord(path, scale, dose, roi_results)`, 상수 `SCALE_SOURCES`, `LINE_STATUSES`, `UNCERTAIN_STATUSES`
+- Produces: `ScaleInfo(nm_per_px: float, source: str)`, `Roi(x0: int, y0: int, x1: int, y1: int)` (속성 `width`, `height`, `cx`, `cy`), `LineResult(row, left_px, right_px, width_px, width_nm, status, flags, reason)` (속성 `counts_in_stats`), `RoiResult(mean_nm, std_nm, n_valid, n_short, n_uncertain, n_low_confidence, angle_deg, lines, warnings, scale)`, `ImageRecord(path, scale, dose, roi_results, error)` — `error`는 로딩 실패나 메타데이터 경고를 담으며 Task 12·13·15·18이 읽고 쓴다, 상수 `SCALE_SOURCES`, `LINE_STATUSES`, `UNCERTAIN_STATUSES`, `LINE_FLAGS`
 
 - [ ] **Step 1: `pyproject.toml` 작성**
 
