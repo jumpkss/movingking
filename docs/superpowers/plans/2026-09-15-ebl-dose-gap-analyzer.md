@@ -356,7 +356,7 @@ git commit -m "feat: add project scaffolding and engine data types"
 
 **Interfaces:**
 - Consumes: 없음
-- Produces: `synth_gap_image(*, width=512, height=512, gap_nm=50.0, nm_per_px=1.0, angle_deg=0.0, edge_sigma_px=1.5, noise_sigma=0.0, i_metal=200.0, i_gap=40.0, edge_bright=0.0, seed=0) -> np.ndarray` (float64 2차원), `gap_center_x_at_row(row, *, width, height, angle_deg) -> float`
+- Produces: `synth_gap_image(*, width=512, height=512, gap_nm=50.0, nm_per_px=1.0, angle_deg=0.0, edge_sigma_px=1.5, noise_sigma=0.0, i_metal=200.0, i_gap=40.0, edge_bright=0.0, seed=0) -> np.ndarray` (float64 2차원), `gap_center_x_at_row(row, *, width, height, angle_deg) -> float`, `half_max_centre(row, i_metal=200.0, i_gap=40.0) -> float` (Task 4도 소비하는 공유 헬퍼)
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
@@ -366,7 +366,7 @@ git commit -m "feat: add project scaffolding and engine data types"
 import numpy as np
 import pytest
 
-from tests.synth import gap_center_x_at_row, synth_gap_image
+from tests.synth import gap_center_x_at_row, half_max_centre, synth_gap_image
 
 
 def test_gap_center_is_dark_and_far_field_is_bright():
@@ -389,22 +389,6 @@ def test_fifty_percent_crossing_sits_exactly_at_half_gap():
     right_value = np.interp(cx + half, np.arange(256), row)
     assert left_value == pytest.approx(mid, abs=1.0)
     assert right_value == pytest.approx(mid, abs=1.0)
-
-
-def half_max_centre(row, i_metal=200.0, i_gap=40.0):
-    """50% 문턱을 지나는 두 지점의 중점으로 갭 중심을 서브픽셀로 잡는다.
-
-    np.argmin을 쓰면 안 된다. 갭 바닥은 erf 전이가 완전히 포화된 평탄부라서
-    (30픽셀 갭, sigma=1.5에서 인덱스 254~257의 4픽셀이 모두 같은 최소값)
-    argmin이 평탄부의 왼쪽 끝을 돌려주고, 참값에서 1.5~2.2픽셀 어긋난다.
-    각도 0에서도 어긋나므로 회전과 무관한 문제다.
-    """
-    mid = (i_metal + i_gap) / 2.0
-    x = np.arange(row.size, dtype=float)
-    lo = int(np.argmin(row))  # 평탄부 어딘가 — 좌우를 가르는 용도로만 쓴다
-    left = np.interp(mid, row[:lo + 1][::-1], x[:lo + 1][::-1])
-    right = np.interp(mid, row[lo:], x[lo:])
-    return (left + right) / 2.0
 
 
 @pytest.mark.parametrize("angle_deg", [0.0, 2.0, 5.0, 10.0])
@@ -457,6 +441,23 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.special import erf
+
+
+def half_max_centre(row, i_metal: float = 200.0, i_gap: float = 40.0) -> float:
+    """50% 문턱을 지나는 두 지점의 중점으로 갭 중심을 서브픽셀로 잡는다.
+
+    np.argmin을 쓰면 안 된다. 갭 바닥은 erf 전이가 완전히 포화된 평탄부라서
+    (30픽셀 갭, sigma=1.5에서 4픽셀이 모두 같은 최소값) argmin이 평탄부의 왼쪽
+    끝을 돌려주고, 참값에서 1.5~2.2픽셀 어긋난다. 회전 정렬된 프로파일에서는
+    행마다 샘플링 위상이 달라 그 왼쪽 끝이 4픽셀까지 흔들린다. 이 중점 추정은
+    같은 조건에서 행 간 편차가 0.012픽셀이다.
+    """
+    mid = (i_metal + i_gap) / 2.0
+    x = np.arange(row.size, dtype=float)
+    lo = int(np.argmin(row))  # 평탄부 어딘가 — 좌우를 가르는 용도로만 쓴다
+    left = np.interp(mid, row[:lo + 1][::-1], x[:lo + 1][::-1])
+    right = np.interp(mid, row[lo:], x[lo:])
+    return float((left + right) / 2.0)
 
 
 def gap_center_x_at_row(row: int, *, width: int, height: int,
@@ -847,7 +848,7 @@ git commit -m "feat: add subpixel half-max edge detection with two-pass gap floo
 - Test: `tests/test_profile.py`
 
 **Interfaces:**
-- Consumes: `Roi` (Task 1)
+- Consumes: `Roi` (Task 1), `synth_gap_image`/`gap_center_x_at_row`/`half_max_centre` (Task 2, 테스트용)
 - Produces: `extract_profiles(image, roi, angle_deg, *, along_average=1) -> np.ndarray` — `(roi.height, roi.width)` float64 배열. 각 **행**이 갭 축에 수직인 방향(측정 방향)의 밝기 프로파일이다.
 
 - [ ] **Step 1: 실패하는 테스트 작성**
@@ -860,7 +861,7 @@ import pytest
 
 from ebl_gap.profile import extract_profiles
 from ebl_gap.types import Roi
-from tests.synth import gap_center_x_at_row, synth_gap_image
+from tests.synth import gap_center_x_at_row, half_max_centre, synth_gap_image
 
 
 def test_zero_angle_full_roi_is_the_identity():
@@ -881,13 +882,18 @@ def test_zero_angle_sub_roi_is_a_plain_crop():
 
 @pytest.mark.parametrize("angle_deg", [2.0, 5.0, 10.0])
 def test_correct_angle_makes_every_row_share_one_gap_column(angle_deg):
-    """정렬이 제대로 되면 기울어진 갭이 모든 행에서 같은 열에 온다."""
+    """정렬이 제대로 되면 기울어진 갭이 모든 행에서 같은 열에 온다.
+
+    갭 중심은 argmin이 아니라 50% 문턱 중점으로 잡는다. 회전 정렬된 프로파일은
+    행마다 샘플링 위상이 달라 평탄한 갭 바닥의 argmin이 4픽셀까지 흔들리는데,
+    그것은 정렬 오차가 아니라 argmin의 동점 처리 방식일 뿐이다.
+    """
     img = synth_gap_image(width=512, height=512, gap_nm=30.0, nm_per_px=1.0,
                           angle_deg=angle_deg)
     roi = Roi(106, 106, 405, 405)
-    out = extract_profiles(img, roi, angle_deg)
-    minima = np.argmin(out, axis=1)
-    assert minima.max() - minima.min() <= 1
+    centres = np.array([half_max_centre(row)
+                        for row in extract_profiles(img, roi, angle_deg)])
+    assert np.ptp(centres) < 0.1
 
 
 def test_wrong_angle_leaves_the_gap_drifting_across_columns():
@@ -923,8 +929,9 @@ def test_angle_sign_matches_the_project_convention():
     assert gap_center_x_at_row(400, width=512, height=512, angle_deg=8.0) > \
            gap_center_x_at_row(100, width=512, height=512, angle_deg=8.0)
     roi = Roi(106, 106, 405, 405)
-    minima = np.argmin(extract_profiles(img, roi, 8.0), axis=1)
-    assert np.ptp(minima) <= 1
+    centres = np.array([half_max_centre(row)
+                        for row in extract_profiles(img, roi, 8.0)])
+    assert np.ptp(centres) < 0.1
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
