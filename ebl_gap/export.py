@@ -1,0 +1,193 @@
+"""측정 결과를 CSV, 오버레이 PNG, 요약 텍스트로 내보낸다.
+
+CSV는 utf-8-sig로 쓴다. 엑셀에서 한글이 깨지지 않게 하기 위해서다.
+"""
+
+from __future__ import annotations
+
+import csv
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from ebl_gap.dataset import Session
+from ebl_gap.profile import aligned_to_image
+from ebl_gap.types import UNCERTAIN_STATUSES, ImageRecord, Roi, RoiResult
+
+SUMMARY_COLUMNS = [
+    "file", "dose_uC", "nm_per_px", "scale_source", "roi_index", "angle_deg",
+    "mean_nm", "std_nm", "n_valid", "n_short", "n_uncertain",
+    "n_low_confidence", "warnings",
+]
+
+LINE_COLUMNS = [
+    "row", "left_px", "right_px", "width_px", "width_nm", "status", "flags",
+    "reason",
+]
+
+STATUS_COLORS = {
+    "valid": (0, 255, 0),
+    "short": (255, 0, 0),
+}
+UNCERTAIN_COLOR = (255, 140, 0)
+ROI_COLOR = (255, 255, 0)
+
+
+def _fmt(value, digits: int = 4) -> str:
+    if value is None:
+        return ""
+    return f"{value:.{digits}f}"
+
+
+def write_summary_csv(path: str | Path, session: Session) -> None:
+    """이미지별, ROI별 요약을 한 행씩 쓴다."""
+    with Path(path).open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SUMMARY_COLUMNS)
+        writer.writeheader()
+        for record in session.records:
+            if not record.roi_results:
+                writer.writerow({
+                    "file": record.path.name,
+                    "dose_uC": _fmt(record.dose, 2),
+                    "nm_per_px": _fmt(record.scale.nm_per_px if record.scale else None),
+                    "scale_source": record.scale.source if record.scale else "",
+                    "roi_index": "",
+                    "angle_deg": "", "mean_nm": "", "std_nm": "",
+                    "n_valid": "", "n_short": "", "n_uncertain": "",
+                    "n_low_confidence": "",
+                    "warnings": record.error or "",
+                })
+                continue
+            for index, result in enumerate(record.roi_results):
+                writer.writerow({
+                    "file": record.path.name,
+                    "dose_uC": _fmt(record.dose, 2),
+                    "nm_per_px": _fmt(result.scale.nm_per_px),
+                    "scale_source": result.scale.source,
+                    "roi_index": index,
+                    "angle_deg": _fmt(result.angle_deg, 3),
+                    "mean_nm": _fmt(result.mean_nm, 3),
+                    "std_nm": _fmt(result.std_nm, 3),
+                    "n_valid": result.n_valid,
+                    "n_short": result.n_short,
+                    "n_uncertain": result.n_uncertain,
+                    "n_low_confidence": result.n_low_confidence,
+                    "warnings": " | ".join(result.warnings),
+                })
+
+
+def write_lines_csv(path: str | Path, record: ImageRecord,
+                    roi_index: int) -> None:
+    """한 ROI의 스캔라인별 원시 측정값을 쓴다."""
+    result = record.roi_results[roi_index]
+    with Path(path).open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=LINE_COLUMNS)
+        writer.writeheader()
+        for line in result.lines:
+            writer.writerow({
+                "row": line.row,
+                "left_px": _fmt(line.left_px, 3),
+                "right_px": _fmt(line.right_px, 3),
+                "width_px": _fmt(line.width_px, 3),
+                "width_nm": _fmt(line.width_nm, 3),
+                "status": line.status,
+                "flags": " ".join(sorted(line.flags)),
+                "reason": line.reason,
+            })
+
+
+def _to_rgb(image) -> np.ndarray:
+    img = np.asarray(image, dtype=np.float64)
+    lo, hi = float(img.min()), float(img.max())
+    span = hi - lo if hi > lo else 1.0
+    gray = np.clip((img - lo) / span * 255.0, 0, 255).astype(np.uint8)
+    return np.repeat(gray[:, :, None], 3, axis=2)
+
+
+def _put(canvas: np.ndarray, x: float, y: float, color) -> None:
+    xi, yi = int(round(x)), int(round(y))
+    if 0 <= yi < canvas.shape[0] and 0 <= xi < canvas.shape[1]:
+        canvas[yi, xi] = color
+
+
+def render_overlay(image, roi: Roi, result: RoiResult) -> np.ndarray:
+    """원본 이미지 위에 ROI와 검출된 에지를 그린 RGB 배열을 만든다."""
+    canvas = _to_rgb(image)
+
+    canvas[roi.y0, roi.x0 : roi.x1 + 1] = ROI_COLOR
+    canvas[roi.y1, roi.x0 : roi.x1 + 1] = ROI_COLOR
+    canvas[roi.y0 : roi.y1 + 1, roi.x0] = ROI_COLOR
+    canvas[roi.y0 : roi.y1 + 1, roi.x1] = ROI_COLOR
+
+    for line in result.lines:
+        if line.status in STATUS_COLORS:
+            color = STATUS_COLORS[line.status]
+        elif line.status in UNCERTAIN_STATUSES:
+            color = UNCERTAIN_COLOR
+        else:
+            continue
+
+        if line.left_px is None or line.right_px is None:
+            # 에지가 없는 라인은 정렬 좌표계의 중앙에 한 점만 찍는다.
+            x, y = aligned_to_image(roi, result.angle_deg,
+                                    (roi.width - 1) / 2.0, line.row)
+            _put(canvas, x, y, color)
+            continue
+
+        for u in (line.left_px, line.right_px):
+            x, y = aligned_to_image(roi, result.angle_deg, u, line.row)
+            _put(canvas, x, y, color)
+    return canvas
+
+
+def write_overlay_png(path: str | Path, image, roi: Roi,
+                      result: RoiResult) -> None:
+    Image.fromarray(render_overlay(image, roi, result), mode="RGB").save(str(path))
+
+
+def format_report(session: Session) -> str:
+    """사람이 읽는 요약 텍스트."""
+    lines: list[str] = ["EBL dose test 갭 측정 요약", "=" * 40, ""]
+
+    for warning in session.scale_warnings():
+        lines.append(f"[세션 경고] {warning}")
+    if session.scale_warnings():
+        lines.append("")
+
+    for record in session.records:
+        dose = "미상" if record.dose is None else f"{record.dose:g} uC"
+        lines.append(f"- {record.path.name} (dose {dose})")
+        if record.error:
+            lines.append(f"    오류: {record.error}")
+        if not record.roi_results:
+            lines.append("    측정 결과 없음")
+            lines.append("")
+            continue
+        for index, result in enumerate(record.roi_results):
+            if result.mean_nm is None:
+                head = "갭 측정 불가"
+            else:
+                spread = "" if result.std_nm is None else f" +- {result.std_nm:.2f}"
+                head = f"갭 {result.mean_nm:.2f}{spread} nm"
+            lines.append(
+                f"    ROI {index}: {head} "
+                f"(유효 {result.n_valid} / short {result.n_short} / "
+                f"판정보류 {result.n_uncertain} 라인, 각도 {result.angle_deg:.2f}도, "
+                f"{result.scale.nm_per_px:.4f} nm/px [{result.scale.source}])"
+            )
+            for warning in result.warnings:
+                lines.append(f"        ! {warning}")
+        lines.append("")
+
+    curve = session.dose_curve()
+    if curve:
+        lines.append("dose - 갭 관계")
+        lines.append("-" * 40)
+        for point in curve:
+            spread = "" if point.std_nm is None else f" +- {point.std_nm:.2f}"
+            lines.append(
+                f"  {point.dose:>8.1f} uC : {point.mean_nm:7.2f}{spread} nm "
+                f"(유효 {point.n_valid}, short {point.n_short})"
+            )
+    return "\n".join(lines)

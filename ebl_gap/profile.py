@@ -50,3 +50,18 @@ def extract_profiles(image, roi: Roi, angle_deg: float, *,
         profiles = uniform_filter1d(profiles, size=along_average, axis=0,
                                     mode="nearest")
     return np.ascontiguousarray(profiles, dtype=np.float64)
+
+
+def aligned_to_image(roi: Roi, angle_deg: float, u_px: float,
+                     v_px: float) -> tuple[float, float]:
+    """정렬 좌표계의 (열, 행)을 원본 이미지 좌표 (x, y)로 되돌린다.
+
+    extract_profiles가 쓰는 변환과 반드시 같은 식이어야 한다. 오버레이에 에지를
+    그리려면 이 역변환이 필요하다.
+    """
+    a_rad = np.radians(float(angle_deg))
+    u = float(u_px) - (roi.width - 1) / 2.0
+    v = float(v_px) - (roi.height - 1) / 2.0
+    x = roi.cx + u * np.cos(a_rad) + v * np.sin(a_rad)
+    y = roi.cy - u * np.sin(a_rad) + v * np.cos(a_rad)
+    return float(x), float(y)

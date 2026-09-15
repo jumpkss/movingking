@@ -84,3 +84,28 @@ def test_angle_sign_matches_the_project_convention():
     centres = np.array([half_max_centre(row)
                         for row in extract_profiles(img, roi, 8.0)])
     assert np.ptp(centres) < 0.1
+
+
+def test_aligned_to_image_inverts_the_sampling_transform():
+    from ebl_gap.profile import aligned_to_image
+
+    roi = Roi(100, 50, 299, 249)
+    for angle in (0.0, 7.0, -12.0):
+        prof = extract_profiles(np.arange(300 * 400, dtype=float).reshape(300, 400),
+                                roi, angle)
+        # 정렬 좌표 (u, v)에서 뽑은 값과 역변환한 이미지 좌표에서 읽은 값이 같아야 한다.
+        u_px, v_px = 37, 91
+        x, y = aligned_to_image(roi, angle, u_px, v_px)
+        img = np.arange(300 * 400, dtype=float).reshape(300, 400)
+        from scipy.ndimage import map_coordinates
+        direct = map_coordinates(img, [[y], [x]], order=1, mode="nearest")[0]
+        assert prof[v_px, u_px] == pytest.approx(direct, rel=1e-9)
+
+
+def test_aligned_to_image_centre_maps_to_roi_centre():
+    from ebl_gap.profile import aligned_to_image
+
+    roi = Roi(100, 50, 299, 249)
+    x, y = aligned_to_image(roi, 15.0, (roi.width - 1) / 2.0,
+                            (roi.height - 1) / 2.0)
+    assert (x, y) == pytest.approx((roi.cx, roi.cy))
