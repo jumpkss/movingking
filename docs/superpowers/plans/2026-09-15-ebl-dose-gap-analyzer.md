@@ -5233,7 +5233,8 @@ from ebl_gap_gui.profile_plot import ProfilePlot
 ```
 
 `measure_current`에서 프로파일을 보관하고 대표 라인을 띄운다.
-`result = measure_roi(...)` 다음에 넣는다:
+**`record.roi_results = [result]` 다음에** 넣는다 — `show_line`이 결과를 읽으므로
+결과가 기록된 뒤여야 한다:
 
 ```python
         self._profiles = extract_profiles(pixels, roi, result.angle_deg,
