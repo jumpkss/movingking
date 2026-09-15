@@ -11,6 +11,23 @@ import numpy as np
 from scipy.special import erf
 
 
+def half_max_centre(row, i_metal: float = 200.0, i_gap: float = 40.0) -> float:
+    """50% 문턱을 지나는 두 지점의 중점으로 갭 중심을 서브픽셀로 잡는다.
+
+    np.argmin을 쓰면 안 된다. 갭 바닥은 erf 전이가 완전히 포화된 평탄부라서
+    (30픽셀 갭, sigma=1.5에서 4픽셀이 모두 같은 최소값) argmin이 평탄부의 왼쪽
+    끝을 돌려주고, 참값에서 1.5~2.2픽셀 어긋난다. 회전 정렬된 프로파일에서는
+    행마다 샘플링 위상이 달라 그 왼쪽 끝이 4픽셀까지 흔들린다. 이 중점 추정은
+    같은 조건에서 행 간 편차가 0.012픽셀이다.
+    """
+    mid = (i_metal + i_gap) / 2.0
+    x = np.arange(row.size, dtype=float)
+    lo = int(np.argmin(row))  # 평탄부 어딘가 — 좌우를 가르는 용도로만 쓴다
+    left = np.interp(mid, row[:lo + 1][::-1], x[:lo + 1][::-1])
+    right = np.interp(mid, row[lo:], x[lo:])
+    return float((left + right) / 2.0)
+
+
 def gap_center_x_at_row(row: int, *, width: int, height: int,
                         angle_deg: float) -> float:
     """주어진 행에서 갭 중심선이 지나는 x 좌표.

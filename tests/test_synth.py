@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from tests.synth import gap_center_x_at_row, synth_gap_image
+from tests.synth import gap_center_x_at_row, half_max_centre, synth_gap_image
 
 
 def test_gap_center_is_dark_and_far_field_is_bright():
@@ -24,22 +24,6 @@ def test_fifty_percent_crossing_sits_exactly_at_half_gap():
     right_value = np.interp(cx + half, np.arange(256), row)
     assert left_value == pytest.approx(mid, abs=1.0)
     assert right_value == pytest.approx(mid, abs=1.0)
-
-
-def half_max_centre(row, i_metal=200.0, i_gap=40.0):
-    """50% 문턱을 지나는 두 지점의 중점으로 갭 중심을 서브픽셀로 잡는다.
-
-    np.argmin을 쓰면 안 된다. 갭 바닥은 erf 전이가 완전히 포화된 평탄부라서
-    (30픽셀 갭, sigma=1.5에서 인덱스 254~257의 4픽셀이 모두 같은 최소값)
-    argmin이 평탄부의 왼쪽 끝을 돌려주고, 참값에서 1.5~2.2픽셀 어긋난다.
-    각도 0에서도 어긋나므로 회전과 무관한 문제다.
-    """
-    mid = (i_metal + i_gap) / 2.0
-    x = np.arange(row.size, dtype=float)
-    lo = int(np.argmin(row))  # 평탄부 어딘가 — 좌우를 가르는 용도로만 쓴다
-    left = np.interp(mid, row[:lo + 1][::-1], x[:lo + 1][::-1])
-    right = np.interp(mid, row[lo:], x[lo:])
-    return (left + right) / 2.0
 
 
 @pytest.mark.parametrize("angle_deg", [0.0, 2.0, 5.0, 10.0])
