@@ -56,6 +56,16 @@ def test_along_axis_averaging_reduces_noise():
     assert smoothed.std() < plain.std() * 0.6
 
 
+def test_empty_image_is_rejected_with_a_korean_error():
+    """빈 이미지는 조용히 쓰레기 값을 돌려주는 대신 명확히 거부해야 한다.
+
+    ndim만 검사하면 (0, 0) 배열이 통과하고 map_coordinates가 초기화되지 않은
+    메모리를 담은 배열을 돌려준다. 예외보다 나쁜 실패 방식이다.
+    """
+    with pytest.raises(ValueError, match="이미지"):
+        extract_profiles(np.empty((0, 0)), Roi(0, 0, 8, 4), 0.0)
+
+
 def test_sampling_outside_the_image_clamps_instead_of_raising():
     img = np.full((50, 50), 7.0)
     roi = Roi(0, 0, 49, 49)
