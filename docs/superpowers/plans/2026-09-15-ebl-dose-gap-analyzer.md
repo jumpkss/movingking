@@ -778,6 +778,24 @@ def analyze_profile(
 
     # 1차: 국소 최소값을 갭 바닥으로 보고 갭 위치를 대략 잡는다.
     i_lo = float(np.min(center))
+
+    # 대비가 없으면 에지를 찾을 수 없다. 이 가드는 선택적 방어가 아니라 필수다:
+    # 대비가 정확히 0이면 히스테리시스 밴드 폭(hysteresis * (i_hi - i_lo))도 0이 되어
+    # 같은 값을 가진 모든 샘플이 armed 플래그를 뒤집고, _count_rising이 수십 번의
+    # 가짜 교차를 센다. 그러면 Task 6이 평탄한(갭 없는) 라인을 multi_edge로 오판한다.
+    if i_lo >= min(i_hi_left, i_hi_right) - _EPS:
+        return ProfileAnalysis(
+            i_hi_left=i_hi_left,
+            i_hi_right=i_hi_right,
+            i_lo=i_lo,
+            sigma_noise=sigma_noise,
+            min_index=min_index,
+            left_px=None,
+            right_px=None,
+            n_cross_left=0,
+            n_cross_right=0,
+        )
+
     left, right, n_left, n_right = _locate(
         p, min_index, i_hi_left, i_hi_right, i_lo, threshold_fraction, hysteresis
     )
