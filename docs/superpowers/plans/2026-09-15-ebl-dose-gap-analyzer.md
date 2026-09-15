@@ -15,8 +15,8 @@
 - Python `>=3.10` (`X | None` 타입 문법을 쓴다)
 - `ebl_gap/` 아래 어떤 모듈도 `PySide6`, `pyqtgraph`, `ebl_gap_gui`를 import하지 않는다. 이것이 깨지면 엔진을 화면 없이 테스트할 수 없다.
 - 엔진 런타임 의존성은 `numpy`, `scipy`, `tifffile`, `Pillow` 네 개로 한정한다.
-- 길이 단위는 엔진 내부에서 항상 **픽셀(px)** 또는 **나노미터(nm)** 이며 변수명에 단위를 붙인다 (`width_px`, `width_nm`). 미터 단위는 `metadata.py`가 읽는 즉시 nm로 바꾼다.
-- 각도 단위는 변수명에 `_deg` 또는 `_rad`를 붙인다.
+- 길이 단위는 엔진 내부에서 항상 **픽셀(px)** 또는 **나노미터(nm)** 이며, **공개 인터페이스·반환값·dataclass 필드·단위가 변환된 값**의 이름에 단위를 붙인다 (`width_px`, `width_nm`, `nm_per_px`). 미터 단위는 `metadata.py`가 읽는 즉시 nm로 바꾼다. 이 규칙의 목적은 nm/px/m가 만나는 **경계**에서 혼동을 막는 것이므로, 하나의 수식 안에서만 살고 전부 픽셀인 것이 자명한 지역 변수(회전 커널의 `u`, `v`, `xx`, `yy` 등)에는 적용하지 않는다 — 그런 곳에 접미사를 붙이면 수식만 읽기 어려워지고 잡아내는 버그는 없다.
+- **각도는 예외 없이** 변수명에 `_deg` 또는 `_rad`를 붙인다. 지역 변수도 포함한다. 도/라디안 혼동은 조용히 틀린 값을 내는 실제 버그 유형이고, 이름 한 글자로 막을 수 있다.
 - `angle_deg`의 정의: **갭이 뻗어나가는 축이 이미지 세로축(+y, 아래 방향)과 이루는 각도**, 반시계 방향이 양수. 0이면 갭이 정확히 세로로 뻗고 측정 방향은 가로다. 모든 모듈이 이 정의를 공유한다.
 - `status` 문자열은 `"valid"`, `"short"`, `"no_edge"`, `"multi_edge"`, `"sub_resolution"`, `"outlier"` 여섯 개뿐이다. 통계에 포함되는 것은 `"valid"` 하나다.
 - `flags`는 `frozenset[str]`이고 현재 값은 `"low_confidence"` 하나다. 플래그는 통계 포함 여부를 바꾸지 않는다.
@@ -914,6 +914,16 @@ def test_along_axis_averaging_reduces_noise():
     assert smoothed.std() < plain.std() * 0.6
 
 
+def test_empty_image_is_rejected_with_a_korean_error():
+    """빈 이미지는 조용히 쓰레기 값을 돌려주는 대신 명확히 거부해야 한다.
+
+    ndim만 검사하면 (0, 0) 배열이 통과하고 map_coordinates가 초기화되지 않은
+    메모리를 담은 배열을 돌려준다. 예외보다 나쁜 실패 방식이다.
+    """
+    with pytest.raises(ValueError, match="이미지"):
+        extract_profiles(np.empty((0, 0)), Roi(0, 0, 8, 4), 0.0)
+
+
 def test_sampling_outside_the_image_clamps_instead_of_raising():
     img = np.full((50, 50), 7.0)
     roi = Roi(0, 0, 49, 49)
@@ -966,20 +976,26 @@ def extract_profiles(image, roi: Roi, angle_deg: float, *,
     픽셀 수와 같다 — 이미지 최대 해상도를 그대로 쓴다는 뜻이다.
     """
     img = np.asarray(image, dtype=np.float64)
-    if img.ndim != 2:
-        raise ValueError(f"이미지는 2차원이어야 한다 (받은 차원: {img.ndim})")
+    # size == 0을 따로 막는다. ndim만 보면 (0, 0) 배열이 통과하고,
+    # map_coordinates가 예외도 NaN도 아닌 초기화되지 않은 메모리를 돌려준다.
+    # 계측 툴에서 조용한 데이터 오염은 예외보다 나쁘다.
+    if img.ndim != 2 or img.size == 0:
+        raise ValueError(
+            f"이미지는 비어 있지 않은 2차원 배열이어야 한다 "
+            f"(차원 {img.ndim}, 원소 수 {img.size})"
+        )
     if along_average < 1:
         raise ValueError(f"along_average는 1 이상이어야 한다: {along_average}")
 
-    a = np.radians(float(angle_deg))
+    a_rad = np.radians(float(angle_deg))
     w, h = roi.width, roi.height
 
-    u = np.arange(w, dtype=np.float64) - (w - 1) / 2.0  # 측정 방향 오프셋
-    v = np.arange(h, dtype=np.float64) - (h - 1) / 2.0  # 갭 축 방향 오프셋
+    u = np.arange(w, dtype=np.float64) - (w - 1) / 2.0  # 측정 방향 오프셋(px)
+    v = np.arange(h, dtype=np.float64) - (h - 1) / 2.0  # 갭 축 방향 오프셋(px)
     uu, vv = np.meshgrid(u, v)
 
-    xx = roi.cx + uu * np.cos(a) + vv * np.sin(a)
-    yy = roi.cy - uu * np.sin(a) + vv * np.cos(a)
+    xx = roi.cx + uu * np.cos(a_rad) + vv * np.sin(a_rad)
+    yy = roi.cy - uu * np.sin(a_rad) + vv * np.cos(a_rad)
 
     # mode="nearest": ROI가 이미지 경계를 살짝 벗어나도 예외 대신 가장자리 값을 쓴다.
     profiles = map_coordinates(img, [yy, xx], order=1, mode="nearest")
@@ -993,7 +1009,7 @@ def extract_profiles(image, roi: Roi, angle_deg: float, *,
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_profile.py -v`
-Expected: PASS (9 passed)
+Expected: PASS (10 passed)
 
 - [ ] **Step 5: 커밋**
 
@@ -2695,18 +2711,18 @@ def aligned_to_image(roi: Roi, angle_deg: float, u_px: float,
     extract_profiles가 쓰는 변환과 반드시 같은 식이어야 한다. 오버레이에 에지를
     그리려면 이 역변환이 필요하다.
     """
-    a = np.radians(float(angle_deg))
+    a_rad = np.radians(float(angle_deg))
     u = float(u_px) - (roi.width - 1) / 2.0
     v = float(v_px) - (roi.height - 1) / 2.0
-    x = roi.cx + u * np.cos(a) + v * np.sin(a)
-    y = roi.cy - u * np.sin(a) + v * np.cos(a)
+    x = roi.cx + u * np.cos(a_rad) + v * np.sin(a_rad)
+    y = roi.cy - u * np.sin(a_rad) + v * np.cos(a_rad)
     return float(x), float(y)
 ```
 
 - [ ] **Step 3: 역변환 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_profile.py -v`
-Expected: PASS (11 passed)
+Expected: PASS (12 passed)
 
 - [ ] **Step 4: 실패하는 내보내기 테스트 작성**
 
