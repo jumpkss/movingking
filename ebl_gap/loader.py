@@ -18,6 +18,7 @@ from ebl_gap.metadata import (
     read_fei_metadata,
     scale_from_metadata,
 )
+from ebl_gap.scalebar import detect_databar_top
 from ebl_gap.types import ImageRecord
 
 TIFF_SUFFIXES = {".tif", ".tiff"}
@@ -61,6 +62,31 @@ class LoadedImage:
     databar_top: int | None
 
 
+def _finish(record: ImageRecord, pixels, databar_top: int | None,
+            notes: list[str]) -> LoadedImage:
+    """메모를 기록에 옮기고 결과를 만든다.
+
+    데이터바 위치를 메타데이터로 확정하지 못했으면 픽셀에서 찾아보고, 찾으면
+    안내를 남긴다. `measure_roi`는 `databar_top`이 있어야 ROI 침범을 거부할 수
+    있으므로, 없을 때 할 수 있는 것은 말해 주는 것뿐이다. 휴리스틱 결과를
+    `databar_top`에 넣어 거부 근거로 삼지는 않는다 — 아래쪽이 어두운 멀쩡한
+    시료를 영영 못 재게 된다.
+    """
+    if databar_top is None:
+        try:
+            found = detect_databar_top(pixels)
+        except Exception:  # 휴리스틱 하나 때문에 로딩이 멈추면 안 된다
+            found = None
+        if found is not None:
+            notes.append(
+                f"아래쪽 {found}행부터 데이터바로 보이는 띠가 있습니다 — "
+                f"ROI가 이 영역에 걸치지 않게 하세요"
+            )
+    if notes:
+        record.error = " | ".join(notes)
+    return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
+
+
 def load_image(path: str | Path, *,
                dose_pattern: str = DEFAULT_DOSE_PATTERN) -> LoadedImage:
     """이미지를 읽고 가능한 만큼 메타데이터를 채운다."""
@@ -75,14 +101,16 @@ def load_image(path: str | Path, *,
                            databar_top=None)
 
     databar_top: int | None = None
+    notes: list[str] = []
+
     try:
         meta = read_fei_metadata(path)
     except MetadataNotFoundError as exc:
-        record.error = str(exc)
-        return LoadedImage(record=record, pixels=pixels, databar_top=None)
+        notes.append(str(exc))
+        return _finish(record, pixels, None, notes)
     except Exception as exc:
-        record.error = f"{NO_SCALE_HINT} (메타데이터를 읽지 못했다: {exc})"
-        return LoadedImage(record=record, pixels=pixels, databar_top=None)
+        notes.append(f"{NO_SCALE_HINT} (메타데이터를 읽지 못했다: {exc})")
+        return _finish(record, pixels, None, notes)
 
     # 아래 두 호출도 각각 감싼다. 둘 다 "TIFF는 읽히고 FEI 태그도 파싱되는데
     # 필드 값만 이상한" 경우에 터지고, 그 예외는 MetadataNotFoundError가 아니다:
@@ -90,8 +118,6 @@ def load_image(path: str | Path, *,
     #   PixelWidth=nan   -> float()을 통과하고 <= 0 검사도 통과(NaN 비교는 항상
     #                       거짓)한 뒤 ScaleInfo가 ValueError
     # 한 장 때문에 폴더 전체 스캔이 멈추면 안 된다는 것이 이 함수의 존재 이유다.
-    notes: list[str] = []
-
     try:
         databar_top = databar_top_row(meta, pixels.shape[0])
     except Exception as exc:
@@ -102,15 +128,11 @@ def load_image(path: str | Path, *,
         scale, warnings = scale_from_metadata(meta, pixels.shape[1])
     except MetadataNotFoundError as exc:
         notes.append(f"{NO_SCALE_HINT} ({exc})")
-        record.error = " | ".join(notes)
-        return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
+        return _finish(record, pixels, databar_top, notes)
     except Exception as exc:
         notes.append(f"{NO_SCALE_HINT} (스케일을 계산하지 못했다: {exc})")
-        record.error = " | ".join(notes)
-        return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
+        return _finish(record, pixels, databar_top, notes)
 
     record.scale = scale
     notes.extend(warnings)
-    if notes:
-        record.error = " | ".join(notes)
-    return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
+    return _finish(record, pixels, databar_top, notes)

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDockWidget,
+    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -32,7 +36,11 @@ from ebl_gap.export import (
     write_summary_csv,
 )
 from ebl_gap.loader import load_image
-from ebl_gap.measure import MeasureParams, measure_roi
+from ebl_gap.measure import (
+    DatabarOverlapError,
+    MeasureParams,
+    measure_roi,
+)
 from ebl_gap.profile import extract_profiles
 from ebl_gap.stats import representative_line
 from ebl_gap.types import Roi
@@ -82,6 +90,31 @@ class MainWindow(QMainWindow):
         self.result_table = ResultTable()
         self.dose_plot = DosePlot()
 
+        # 각도 조작. 스펙 4.2가 "화면에 표시하고 사용자가 수동으로 고정할 수
+        # 있다"를 요구한다. 자동 추정이 무너지는 ROI(갭이 가장자리에 붙는 배치)
+        # 에서 사용자가 손으로 잡을 수 있는 유일한 수단이다.
+        self.angle_deg_spin = QDoubleSpinBox()
+        # estimate_angle_deg는 arctan 결과이므로 (-90, 90)을 낸다. 범위를 그보다
+        # 좁히면 무장할 때 값이 조용히 잘려, 화면의 각도와 측정에 쓴 각도가
+        # 갈라진다. 하필 잘리는 것이 사용자에게 보여줘야 할 붕괴한 각도다.
+        self.angle_deg_spin.setRange(-90.0, 90.0)
+        self.angle_deg_spin.setDecimals(2)
+        self.angle_deg_spin.setSingleStep(0.25)
+        self.angle_deg_spin.setSuffix("도")
+        self.angle_lock_check = QCheckBox("각도 고정")
+
+        # 스펙 4.3/4.4가 UI 노출을 요구하는 두 값. MeasureParams의 docstring이
+        # "GUI가 그대로 노출한다"고 적고도 지금까지 노출하지 않았다.
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(0.10, 0.90)
+        self.threshold_spin.setDecimals(2)
+        self.threshold_spin.setSingleStep(0.05)
+        self.threshold_spin.setValue(self.params.threshold_fraction)
+        self.along_average_spin = QSpinBox()
+        self.along_average_spin.setRange(1, 15)
+        self.along_average_spin.setSuffix("행")
+        self.along_average_spin.setValue(self.params.along_average)
+
         self.file_panel.selection_changed.connect(self.select_image)
         self.file_panel.dose_edited.connect(lambda *_: self._refresh_session_views())
         # ROI를 옮기면 낡은 오버레이를 지운다. 측정 결과는 그 ROI에 묶여 있으므로,
@@ -92,6 +125,10 @@ class MainWindow(QMainWindow):
         # ROI가 움직이면 축 자체가 다른 뜻이 된다.
         self.image_view.roi_changed.connect(self._clear_profile)
         self.line_selector.valueChanged.connect(self.show_line)
+        self.angle_deg_spin.valueChanged.connect(self._angle_controls_changed)
+        self.angle_lock_check.toggled.connect(self._angle_controls_changed)
+        self.threshold_spin.valueChanged.connect(self._measure_settings_changed)
+        self.along_average_spin.valueChanged.connect(self._measure_settings_changed)
         self.prev_anomaly_button.clicked.connect(
             lambda: self._jump_to_anomaly(-1))
         self.next_anomaly_button.clicked.connect(
@@ -139,6 +176,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 배선
 
     def _build_toolbar(self) -> None:
+        self._build_settings_toolbar()
         bar = self.addToolBar("주요 동작")
         bar.addAction("폴더 열기", self._choose_folder)
         bar.addAction("측정", self.measure_current)
@@ -152,6 +190,49 @@ class MainWindow(QMainWindow):
                                                             "overlay.png"))
         bar.addAction("요약 리포트", lambda: self._save_as(self.export_report,
                                                            "report.txt"))
+
+    def _build_settings_toolbar(self) -> None:
+        """측정 설정 도구 모음. 엔진의 조절값을 사용자에게 그대로 내준다."""
+        bar = self.addToolBar("측정 설정")
+        bar.addWidget(QLabel("갭 축 각도 "))
+        bar.addWidget(self.angle_deg_spin)
+        bar.addWidget(self.angle_lock_check)
+        bar.addSeparator()
+        bar.addWidget(QLabel(" 문턱 비율 "))
+        bar.addWidget(self.threshold_spin)
+        bar.addWidget(QLabel(" 갭 축 이동평균 "))
+        bar.addWidget(self.along_average_spin)
+
+    def _measure_settings_changed(self, *_) -> None:
+        """조절값을 엔진 파라미터에 옮기고, 보이는 진단을 즉시 맞춰 그린다.
+
+        MeasureParams는 frozen이므로 통째로 갈아 끼운다. 여기서 다시 측정하지는
+        않는다 — 스핀박스를 한 칸씩 돌리는 동안 ROI 전체를 매번 재게 된다.
+        다만 미니 플롯은 다시 그린다: 문턱선은 엔진이 쓴 값을 그대로 받으므로
+        (Task 20) 문턱 비율을 돌리면 선이 따라 움직이는 것이 바로 보인다.
+        """
+        self.params = replace(
+            self.params,
+            threshold_fraction=self.threshold_spin.value(),
+            along_average=self.along_average_spin.value(),
+        )
+        if self.line_selector.isEnabled():
+            self.show_line(self.line_selector.value())
+        self._set_status("측정 설정이 바뀌었습니다 — 다시 측정하세요")
+
+    def _angle_controls_changed(self, *_) -> None:
+        """각도 조작은 다음 측정부터 반영된다는 것을 말해 준다.
+
+        여기서 곧바로 다시 측정하지 않는 이유는, 스핀박스를 한 칸씩 돌리는
+        동안 매 단계마다 ROI 전체를 다시 재게 되기 때문이다.
+        """
+        if self.angle_lock_check.isChecked():
+            self._set_status(
+                f"갭 축 각도 {self.angle_deg_spin.value():.2f}도로 고정 — "
+                "다시 측정하세요"
+            )
+        else:
+            self._set_status("갭 축 각도 자동 추정 — 다시 측정하세요")
 
     def _choose_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "SEM 이미지 폴더 선택")
@@ -265,13 +346,18 @@ class MainWindow(QMainWindow):
 
         pixels = self._pixels[self._current]
         databar_top = self._databar_tops.get(self._current)
-        if databar_top is not None and roi.y1 >= databar_top:
-            self._set_status(
-                f"ROI가 데이터바 영역({databar_top}행 이하)을 침범했습니다"
-            )
-            return
 
-        result = measure_roi(pixels, roi, record.scale, params=self.params)
+        angle_deg = (self.angle_deg_spin.value()
+                     if self.angle_lock_check.isChecked() else None)
+        # 데이터바 거부는 엔진이 한다. 여기서 한 번 더 판정하면 규칙이 두 군데로
+        # 갈라지고, 노트북에서 measure_roi를 직접 부르는 경로는 그중 하나만
+        # 받는다. 여기서는 사유를 그대로 상태 표시줄에 옮긴다.
+        try:
+            result = measure_roi(pixels, roi, record.scale, angle_deg=angle_deg,
+                                 params=self.params, databar_top=databar_top)
+        except DatabarOverlapError as exc:
+            self._set_status(str(exc))
+            return
         record.roi_results = [result]  # ROI 하나만 유지한다
 
         # 프로파일과 그것을 뽑은 ROI를 한 쌍으로 보관한다. 따로 두면 복원할 때
@@ -292,6 +378,21 @@ class MainWindow(QMainWindow):
         else:
             self._set_status(f"갭 {result.mean_nm:.2f} nm "
                              f"(유효 {result.n_valid} 라인)")
+        self._arm_angle_deg_spin(result.angle_deg)
+
+    def _arm_angle_deg_spin(self, angle_deg: float) -> None:
+        """추정된 각도를 스핀박스에 채운다. 사용자는 이 값을 보고 고정을 정한다.
+
+        채우는 동안의 valueChanged가 _angle_controls_changed를 깨우면, 방금
+        띄운 측정 결과 한 줄이 "다시 측정하세요" 안내로 덮인다 — 사용자가 볼
+        유일한 측정값이다. try/finally로 반드시 되돌린다: True로 남으면 이후
+        사용자가 각도를 돌려도 아무 반응이 없는 죽은 조작이 된다.
+        """
+        blocked = self.angle_deg_spin.blockSignals(True)
+        try:
+            self.angle_deg_spin.setValue(float(angle_deg))
+        finally:
+            self.angle_deg_spin.blockSignals(blocked)
 
     def _show_representative_line(self, result) -> None:
         """대표 라인 하나를 미니 플롯에 띄우고 라인 조작을 무장한다.

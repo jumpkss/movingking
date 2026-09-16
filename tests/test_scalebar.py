@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from ebl_gap.scalebar import (
+    detect_databar_top,
     detect_scalebar,
     scale_from_scalebar,
     scale_from_two_points,
@@ -102,3 +103,35 @@ def test_scale_helpers_reject_nonsense_input():
         scale_from_scalebar(length_px=0.0, length_nm=1000.0)
     with pytest.raises(ValueError, match="길이"):
         scale_from_two_points((10.0, 10.0), (10.0, 10.0), length_nm=500.0)
+
+
+def test_detect_databar_top_finds_a_dark_band_without_metadata():
+    """FEI 계열의 어두운 데이터바. 메타데이터가 없는 PNG 크롭이 이 경로다."""
+    assert detect_databar_top(image_with_databar()) == 884
+
+
+def test_detect_databar_top_finds_a_bright_band_too():
+    """데이터바가 밝은 장비도 있다. 부호를 가리면 절반을 놓친다."""
+    img = np.full((943, 1024), 10.0)
+    img[884:, :] = 250.0
+    assert detect_databar_top(img) == 884
+
+
+def test_detect_databar_top_is_none_for_an_image_without_one():
+    rng = np.random.default_rng(0)
+    img = np.full((512, 512), 120.0) + rng.normal(0.0, 4.0, (512, 512))
+    img[:, 250:262] = 40.0  # 세로 갭은 아래쪽 띠가 아니다
+    assert detect_databar_top(img) is None
+
+
+def test_detect_databar_top_ignores_a_band_taller_than_the_scan_area():
+    """아래쪽 절반이 통째로 어두우면 데이터바가 아니라 시료의 일부다."""
+    img = np.full((943, 1024), 120.0)
+    img[500:, :] = 10.0
+    assert detect_databar_top(img) is None
+
+
+def test_detect_databar_top_ignores_a_one_row_streak():
+    img = np.full((943, 1024), 120.0)
+    img[942:, :] = 10.0
+    assert detect_databar_top(img) is None

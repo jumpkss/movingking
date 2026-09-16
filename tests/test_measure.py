@@ -87,3 +87,70 @@ def test_result_carries_the_scale_it_was_measured_with():
     img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
     result = measure_roi(img, ROI, SCALE)
     assert result.scale is SCALE
+
+
+# 리뷰어가 실측한 각도 붕괴 조건의 재현. 1024x943, 70 nm 갭, 3.0517578125 nm/px,
+# 실제 기울기 2도. ROI를 x0=460에 놓으면 갭이 ROI 왼쪽 평탄부 구간(양 끝 20%)에
+# 걸쳐 행마다 에지가 엉뚱하게 잡히고, Theil-Sen 적합이 -18.5도로 접힌다.
+FEI_SCALE = ScaleInfo(nm_per_px=3.0517578125, source="fei_metadata")
+COLLAPSING_ROI = Roi(460, 100, 760, 400)
+HEALTHY_ROI = Roi(362, 100, 662, 400)
+
+
+def _angle_collapse_image():
+    return synth_gap_image(width=1024, height=943, gap_nm=70.0,
+                           nm_per_px=3.0517578125, angle_deg=2.0,
+                           edge_sigma_px=1.2, noise_sigma=8.0,
+                           edge_bright=15.0, seed=7)
+
+
+def test_an_implausible_fitted_angle_gets_a_warning_that_names_the_cause():
+    """각도가 무너진 측정은 그 사실을 말해야 한다.
+
+    이 ROI는 평균 74 nm(참값 70.0, +1.3픽셀)를 유효 라인 85줄과 표준편차
+    0.4 nm로 내놓는다 — 숫자만 보면 정밀하다. 유일하게 뜨던 경고는
+    `short 발생 구간 있음`이라 원인을 잘못 짚었다.
+    """
+    result = measure_roi(_angle_collapse_image(), COLLAPSING_ROI, FEI_SCALE)
+    assert result.angle_deg < -15.0
+    assert result.mean_nm > 71.0  # 참값 70.0에서 1픽셀(3.05 nm) 넘게 부풀었다
+    assert any("갭 축 각도" in w for w in result.warnings), result.warnings
+
+
+def test_a_normal_tilt_does_not_trigger_the_angle_warning():
+    """스펙이 상정한 0~10도 범위 안의 기울기는 경고 없이 지나가야 한다."""
+    result = measure_roi(_angle_collapse_image(), HEALTHY_ROI, FEI_SCALE)
+    assert result.angle_deg == pytest.approx(2.0, abs=0.3)
+    assert not any("갭 축 각도" in w for w in result.warnings), result.warnings
+
+
+def test_an_roi_that_reaches_into_the_databar_is_refused():
+    """데이터바를 걸친 ROI는 측정하지 않는다 (스펙 4.1).
+
+    측정하면 데이터바의 균일한 띠가 라인마다 short로 판정돼 날조된 이상 비율이
+    나온다. 이 툴이 보고하려고 존재하는 바로 그 신호에 가짜가 섞인다.
+    """
+    img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
+    img[380:, :] = 10.0  # 아래쪽 데이터바
+    with pytest.raises(ValueError, match="데이터바"):
+        measure_roi(img, ROI, SCALE, databar_top=380)
+
+
+def test_an_roi_above_the_databar_is_measured_normally():
+    img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
+    result = measure_roi(img, ROI, SCALE, databar_top=460)
+    assert result.mean_nm == pytest.approx(40.0, abs=1.0)
+
+
+def test_databar_top_defaults_to_none_for_callers_that_cannot_know_it():
+    """노트북 사용처럼 데이터바 위치를 모르는 호출은 그대로 동작한다."""
+    img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
+    assert measure_roi(img, ROI, SCALE).mean_nm == pytest.approx(40.0, abs=1.0)
+
+
+def test_the_first_databar_row_already_counts_as_intrusion():
+    """경계는 '데이터바 첫 줄에 닿으면 거부'다. ROI는 양 끝 픽셀을 포함한다."""
+    img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
+    with pytest.raises(ValueError, match="데이터바"):
+        measure_roi(img, ROI, SCALE, databar_top=ROI.y1)
+    assert measure_roi(img, ROI, SCALE, databar_top=ROI.y1 + 1) is not None

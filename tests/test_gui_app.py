@@ -56,6 +56,20 @@ def write_closed_sample(path, dose, noise_sigma=3.0):
     return _write_tif(path, dose, data.astype(np.uint8))
 
 
+def write_sample_with_databar(path, gap_nm, dose, databar_rows=60):
+    """스캔 영역 아래에 어두운 데이터바를 붙이고 ResolutionY로 경계를 알린다."""
+    scan_rows = 512 - databar_rows
+    img = synth_gap_image(width=512, height=scan_rows, gap_nm=gap_nm,
+                          nm_per_px=3.0, angle_deg=2.0, edge_sigma_px=1.2,
+                          noise_sigma=3.0, seed=int(dose))
+    data = np.full((512, 512), 10, dtype=np.uint8)
+    data[:scan_rows] = np.clip(img, 0, 255).astype(np.uint8)
+    out = path / f"bar_{dose:g}uC.tif"
+    ini = _fei_ini().replace("ResolutionY=512", f"ResolutionY={scan_rows}")
+    tifffile.imwrite(out, data, extratags=[(34682, 's', 0, ini, True)])
+    return out
+
+
 @pytest.fixture()
 def folder(tmp_path):
     write_sample(tmp_path, gap_nm=90.0, dose=300)
@@ -758,3 +772,171 @@ def test_exporting_an_overlay_with_nothing_open_says_so(qapp, tmp_path):
     window.export_overlay(tmp_path / "overlay.png")
     assert (tmp_path / "overlay.png").exists() is False
     assert window.status_text() != ""
+
+
+def test_locking_the_angle_sends_it_to_the_engine(qapp, folder):
+    """체크박스와 스핀박스의 값이 measure_roi까지 실제로 닿는지 확인한다.
+
+    위젯 값만 확인하는 테스트는 이 프로젝트에서 죽은 경로를 아홉 번 초록으로
+    덮었다. 여기서는 엔진이 돌려준 angle_deg로 확인한다 — 그 값은 measure_roi를
+    통과하지 않고는 나올 수 없다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    auto_deg = window.session.records[0].roi_results[0].angle_deg
+    assert auto_deg == pytest.approx(2.0, abs=0.5)  # 합성 이미지의 실제 기울기
+
+    window.angle_lock_check.setChecked(True)
+    window.angle_deg_spin.setValue(-12.0)
+    window.measure_current()
+
+    assert window.session.records[0].roi_results[0].angle_deg == pytest.approx(-12.0)
+
+
+def test_unchecking_the_lock_returns_to_automatic_estimation(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.angle_lock_check.setChecked(True)
+    window.angle_deg_spin.setValue(-12.0)
+    window.measure_current()
+    assert window.session.records[0].roi_results[0].angle_deg == pytest.approx(-12.0)
+
+    window.angle_lock_check.setChecked(False)
+    window.measure_current()
+    assert window.session.records[0].roi_results[0].angle_deg == pytest.approx(
+        2.0, abs=0.5)
+
+
+def test_measuring_puts_the_estimated_angle_into_the_spin_box(qapp, folder):
+    """사용자가 추정된 각도를 보고 고정할지 정할 수 있어야 한다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    assert window.angle_deg_spin.value() == pytest.approx(result.angle_deg,
+                                                          abs=0.01)
+
+
+def test_arming_the_angle_spin_box_leaves_its_signal_working(qapp, folder):
+    """무장하면서 막은 신호를 되돌리지 않으면 이후 조작이 조용히 무시된다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    seen = []
+    window.angle_deg_spin.valueChanged.connect(seen.append)
+    window.angle_deg_spin.setValue(7.5)
+    assert seen == [pytest.approx(7.5)]
+
+
+def test_arming_the_angle_spin_box_does_not_overwrite_the_result_message(qapp,
+                                                                         folder):
+    """측정 결과 한 줄이 각도 안내로 덮이면 사용자는 측정값을 못 본다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    assert "nm" in window.status_text()
+    assert "고정" not in window.status_text()
+
+
+def test_locking_the_angle_says_that_a_new_measurement_is_needed(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    window.angle_lock_check.setChecked(True)
+    assert "고정" in window.status_text()
+    assert "다시 측정" in window.status_text()
+
+
+def test_the_threshold_control_reaches_the_engine(qapp, folder):
+    """문턱 비율 조작이 measure_roi까지 닿는지 측정값의 방향으로 확인한다.
+
+    어두운 갭이므로 문턱을 낮추면 갭이 좁게 측정된다. 이 방향이 뒤집히면
+    README가 적어 놓은 설명이 거짓말이 된다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.threshold_spin.setValue(0.30)
+    window.measure_current()
+    narrow_nm = window.session.records[0].roi_results[0].mean_nm
+
+    window.threshold_spin.setValue(0.70)
+    window.measure_current()
+    wide_nm = window.session.records[0].roi_results[0].mean_nm
+
+    assert narrow_nm < 90.0 < wide_nm  # 합성 이미지의 참값은 90 nm
+
+
+def test_the_along_average_control_reaches_the_engine(qapp, folder):
+    """갭 축 이동평균을 올리면 행 사이 산포가 실제로 줄어야 한다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    raw_std_nm = window.session.records[0].roi_results[0].std_nm
+
+    window.along_average_spin.setValue(5)
+    window.measure_current()
+    smoothed_std_nm = window.session.records[0].roi_results[0].std_nm
+
+    assert smoothed_std_nm < 0.9 * raw_std_nm
+
+
+def test_changing_the_threshold_moves_the_profile_plot_line(qapp, folder):
+    """Task 20이 보장한 '문턱선은 엔진 값을 따라간다'가 조작으로 눈에 보인다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    before = sorted(item.value()
+                    for item in window.profile_plot.threshold_lines())
+
+    window.threshold_spin.setValue(0.30)
+
+    after = sorted(item.value()
+                   for item in window.profile_plot.threshold_lines())
+    assert len(after) == 2
+    assert all(low < high for low, high in zip(after, before))
+
+
+def test_measuring_an_roi_that_reaches_into_the_databar_is_refused(qapp,
+                                                                   tmp_path):
+    """거부는 엔진이 한다. GUI는 그 사유를 그대로 사용자에게 보여준다.
+
+    ROI가 데이터바를 걸치면 균일한 띠가 라인마다 short로 판정돼 날조된 이상
+    비율이 나온다. 측정 결과가 남지 않는 것까지 확인한다 — 결과가 남으면
+    dose-gap 곡선과 CSV에 그 가짜 숫자가 그대로 실린다.
+    """
+    write_sample_with_databar(tmp_path, gap_nm=90.0, dose=300)
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    window.image_view.set_roi(Roi(100, 300, 400, 500))  # 452행부터가 데이터바다
+
+    window.measure_current()
+
+    assert window.session.records[0].roi_results == []
+    assert "데이터바" in window.status_text()
+    assert "452" in window.status_text()
+
+
+def test_measuring_above_the_databar_still_works(qapp, tmp_path):
+    write_sample_with_databar(tmp_path, gap_nm=90.0, dose=300)
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    window.image_view.set_roi(Roi(100, 100, 400, 400))
+
+    window.measure_current()
+
+    result = window.session.records[0].roi_results[0]
+    assert result.mean_nm == pytest.approx(90.0, abs=3.0)
+
+
+def test_the_angle_spin_box_spans_every_angle_the_engine_can_return(qapp):
+    """estimate_angle_deg는 arctan 결과라 값의 범위가 (-90, 90)이다.
+
+    스핀박스 범위가 그보다 좁으면 무장할 때 값이 조용히 잘리고, 화면에 보이는
+    각도와 측정에 실제로 쓴 각도가 갈라진다. 각도 붕괴를 사용자에게 보여주는
+    것이 이 조작의 존재 이유인데, 하필 그 붕괴한 값이 잘린다.
+    """
+    window = MainWindow()
+    for angle_deg in (-70.0, 70.0):
+        window.angle_deg_spin.setValue(angle_deg)
+        assert window.angle_deg_spin.value() == pytest.approx(angle_deg)

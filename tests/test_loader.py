@@ -144,3 +144,30 @@ def test_an_unusable_pixel_width_also_gets_the_calibration_guidance(tmp_path):
 
     assert "스케일 메타데이터가 없습니다" in error
     assert "스케일 캘리브레이션" in error
+
+
+def test_a_bottom_band_is_reported_when_metadata_cannot_locate_the_databar(
+        tmp_path):
+    """메타데이터가 없으면 거부할 수단이 없다. 최소한 말은 해 줘야 한다.
+
+    데이터바를 걸친 ROI는 날조된 short 비율을 만든다. PNG 크롭과 비 FEI TIFF가
+    바로 이 경로로 몰린다.
+    """
+    data = np.full((300, 400), 120, dtype=np.uint8)
+    data[260:, :] = 12
+    path = tmp_path / "crop_300uC.png"
+    Image.fromarray(data).save(path)
+
+    loaded = load_image(path)
+
+    assert loaded.databar_top is None  # 메타데이터가 없으니 확정은 못 한다
+    assert "데이터바" in loaded.record.error
+    assert "260" in loaded.record.error
+    assert "스케일" in loaded.record.error  # 원래 안내도 그대로 남는다
+
+
+def test_no_band_note_for_an_image_without_a_databar(tmp_path):
+    path = tmp_path / "plain_300uC.png"
+    Image.fromarray(np.full((64, 64), 200, dtype=np.uint8)).save(path)
+    loaded = load_image(path)
+    assert "데이터바" not in loaded.record.error
