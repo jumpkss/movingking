@@ -3538,12 +3538,28 @@ def test_roi_is_clamped_to_the_image_bounds(qapp):
     assert roi.x1 <= 99 and roi.y1 <= 99
 
 
-def test_moving_the_roi_emits_roi_changed(qapp):
+def test_setting_the_roi_programmatically_emits_roi_changed(qapp):
     view = ImageView()
     view.set_image(synth_gap_image(width=512, height=512))
     seen = []
     view.roi_changed.connect(lambda: seen.append(1))
     view.set_roi(Roi(10, 10, 200, 200))
+    assert seen
+
+
+def test_dragging_the_roi_emits_roi_changed(qapp):
+    """마우스 드래그가 타는 경로를 직접 확인한다.
+
+    set_roi()는 자기 본문에서 roi_changed를 명시적으로 발신하므로, 그것만
+    테스트하면 pyqtgraph 배선이 완전히 깨져 있어도 통과한다. 실제 드래그는
+    RectROI 내부의 setPos/setSize를 거쳐 sigRegionChanged로 나오므로 그 경로를
+    직접 두드려야 한다.
+    """
+    view = ImageView()
+    view.set_image(synth_gap_image(width=512, height=512))
+    seen = []
+    view.roi_changed.connect(lambda: seen.append(1))
+    view._roi.setPos([120, 130])
     assert seen
 
 
@@ -3632,7 +3648,11 @@ class ImageView(QWidget):
         self._roi.addScaleHandle([0, 0], [1, 1])
         self._roi.setZValue(10)
         self._roi.setVisible(False)
-        self._roi.sigRegionChanged.connect(self.roi_changed.emit)
+        # sigRegionChanged는 ROI 객체를 인자로 넘기며 발신한다. 0-인자 Signal의
+        # emit에 직접 연결하면 PySide6가 매 변경마다 TypeError를 던지고 리스너는
+        # 호출되지 않는다 — 마우스 드래그는 전부 이 경로를 타므로, 직접 연결하면
+        # 프로그램이 set_roi()로 바꿀 때만 신호가 살아 있는 상태가 된다.
+        self._roi.sigRegionChanged.connect(lambda *_: self.roi_changed.emit())
         self._plot.addItem(self._roi)
 
         layout = QVBoxLayout(self)
@@ -3707,7 +3727,7 @@ class ImageView(QWidget):
 - [ ] **Step 5: 테스트 통과 확인**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_image_view.py -v`
-Expected: PASS (8 passed)
+Expected: PASS (9 passed)
 
 - [ ] **Step 6: 커밋**
 
@@ -4675,6 +4695,17 @@ def test_measuring_both_images_fills_the_dose_curve(qapp, folder):
     assert window.dose_plot.point_count() == 2
 
 
+def test_dragging_the_roi_clears_the_stale_overlay(qapp, folder):
+    """측정 후 ROI를 옮기면 이전 위치의 에지 오버레이가 남아 있으면 안 된다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.select_image(0)
+    window.measure_current()
+    assert window.image_view.has_overlay() is True
+    window.image_view._roi.setPos([120, 130])
+    assert window.image_view.has_overlay() is False
+
+
 def test_export_summary_csv_has_a_row_per_measurement(qapp, folder, tmp_path):
     window = MainWindow()
     window.open_folder(folder)
@@ -4793,6 +4824,10 @@ class MainWindow(QMainWindow):
 
         self.file_panel.selection_changed.connect(self.select_image)
         self.file_panel.dose_edited.connect(lambda *_: self._refresh_session_views())
+        # ROI를 옮기면 낡은 오버레이를 지운다. 측정 결과는 그 ROI에 묶여 있으므로,
+        # 새 위치에 이전 위치의 에지가 그려진 채로 남으면 사용자가 틀린 그림을
+        # 보고 판단하게 된다. 다시 측정할 때 새 오버레이가 그려진다.
+        self.image_view.roi_changed.connect(self.image_view.clear_overlay)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.file_panel)
@@ -4995,7 +5030,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -v`
-Expected: PASS (11 passed)
+Expected: PASS (12 passed)
 
 - [ ] **Step 5: `README.md` 작성 (기존 내용을 덮어쓴다)**
 
@@ -5551,7 +5586,7 @@ from ebl_gap_gui.profile_plot import ProfilePlot
 - [ ] **Step 10: 배선 테스트 통과 확인**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -v`
-Expected: PASS (16 passed)
+Expected: PASS (17 passed)
 
 - [ ] **Step 11: 전체 테스트 실행**
 
