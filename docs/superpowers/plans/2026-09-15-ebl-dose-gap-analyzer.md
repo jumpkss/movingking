@@ -6122,6 +6122,221 @@ git commit -m "Take thresholds from the engine and drop the profile plot with it
 
 ---
 
+### Task 20 수정 라운드: 지웠다는 말 대신 지워진 화면을 검사한다
+
+Task 20의 **코드는 맞다**. 리뷰어가 깨뜨릴 방법을 찾지 못했다. 틀린 것은 테스트다.
+이 태스크가 보장하려고 존재하는 동작 세 가지가 실제로는 고정돼 있지 않다.
+
+**1) ROI 이동 시 삭제 테스트가 화면을 안 본다.**
+
+`test_moving_the_roi_clears_the_profile_plot`이 `has_curve()`와 `_profiles`만 본다.
+둘 다 저장된 플래그다. `ProfilePlot.clear()`에서 `self._plot.clear()` 한 줄을 지워도
+281개가 전부 통과한다. 컨트롤러가 직접 확인한 실제 화면:
+
+```
+측정 후 row: 97 문턱선: [119.91, 119.94]
+ROI 이동 후 has_curve(): False
+ROI 이동 후 화면에 실제로 남은 문턱선: [119.91, 119.94]
+```
+
+이전 ROI의 곡선과 문턱선이 그대로 남아 있는데 접근자는 비었다고 답한다. 바로 이
+태스크가 죽이려던 결함이다. 같은 커밋이 이미 알맞은 도구(`threshold_lines()`,
+그려진 항목에서 파생된다)를 만들어 놨다.
+
+- [ ] **Step 1: 화면을 보는 단언을 더한다**
+
+`tests/test_gui_app.py`의 `test_moving_the_roi_clears_the_profile_plot`에
+`setPos` 뒤로 한 줄 더한다.
+
+```python
+    # 플래그가 아니라 그려진 항목을 본다. clear()가 _plot.clear()를 빼먹어도
+    # has_curve()는 False라고 답하므로 플래그만으로는 아무것도 못 지킨다.
+    assert window.profile_plot.threshold_lines() == []
+```
+
+RED 확인: `ProfilePlot.clear()`에서 `self._plot.clear()`를 잠시 지우고 이 테스트가
+실패하는지 본다. 출력을 보고서에 붙이고 되돌린다. **되돌리는 것을 잊으면 기능이
+사라진다** — 되돌린 뒤 `git diff`가 그 파일에 대해 비어 있는지 확인한다.
+
+`test_selecting_another_image_clears_the_profile_plot`에도 같은 단언을 더한다.
+
+**2) `select_image` -> `_clear_profile` 배선을 아무도 안 지킨다.**
+
+`app.py:166`을 예전처럼 `self.profile_plot.clear()`로 되돌려도 281개가 전부 통과한다.
+보통 경로에서는 `set_image` -> `set_roi` -> `roi_changed` -> `_clear_profile`이 이미
+`_profiles`를 비우기 때문이다. 그러나 **`roi_changed`가 안 나는 경로가 실재한다**:
+읽지 못한 파일은 `load_image`가 `np.empty((0, 0))`를 돌려주고
+(`ebl_gap/loader.py`), `ImageView.set_image`는 `array.size == 0`에서 일찍 빠진다
+(`ebl_gap_gui/image_view.py`). 리뷰어가 실증한 결과:
+
+```
+정상 TIFF 1장 + 깨진 파일 1장, 0번을 측정한 뒤 1번으로 전환
+HEAD:              _profiles is None -> True
+배선을 되돌리면:    _profiles is None -> False, 남은 배열 (204, 204)
+양쪽 가드를 다 빼면: show_line(50)이 0번 이미지의 배열로 1번 이미지의 행을 그린다
+                    -> "행 50 · valid · 폭 19.98 px = 59.94 nm"
+```
+
+- [ ] **Step 2: 깨진 파일로 그 경로를 고정하는 테스트 (RED)**
+
+`tests/test_gui_app.py`에 추가한다.
+
+```python
+def test_switching_to_an_unreadable_image_drops_the_previous_profiles(qapp,
+                                                                      tmp_path):
+    """읽지 못한 이미지로 넘어가면 이전 이미지의 프로파일이 남으면 안 된다.
+
+    빈 배열은 ImageView.set_image에서 일찍 빠져 roi_changed가 나지 않는다.
+    그래서 ROI 경로가 대신 비워 주지 못하는 유일한 경로다. 여기서 배열이
+    남으면 show_line이 앞 이미지의 프로파일을 현재 이미지의 것으로 그린다.
+    """
+    write_sample(tmp_path, gap_nm=90.0, dose=300)
+    (tmp_path / "zbroken.tif").write_bytes(b"not a tiff at all")
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    window.measure_current()
+    assert window._profiles is not None
+
+    window.select_image(1)
+
+    assert window._profiles is None
+    assert window.profile_plot.has_curve() is False
+```
+
+파일 이름이 `z`로 시작하는 것은 `sorted()`에서 뒤로 가게 하기 위한 것이다 —
+정상 파일이 0번이어야 측정이 된다.
+
+RED 확인: `app.py`의 `select_image` 안 `self._clear_profile()`을
+`self.profile_plot.clear()`로 잠시 되돌려 실패를 보고 되돌린다.
+
+**3) 대비 0 조기 반환이 fraction을 나르는지 아무도 안 본다.**
+
+`edges.py`의 두 구성 지점 중 조기 반환 쪽을 `threshold_fraction=0.5`로 박아도
+281개가 전부 통과한다. 기존 평탄 프로파일 테스트가 기본값 0.5로만 그 가지에 닿기
+때문이다.
+
+- [ ] **Step 3: 조기 반환 경로를 기본값 아닌 fraction으로 친다**
+
+`tests/test_edges.py`에 추가한다.
+
+```python
+def test_zero_contrast_analysis_still_carries_the_fraction():
+    """대비 0 조기 반환도 실제로 쓴 fraction을 실어 나른다.
+
+    구성 지점이 둘이라 한쪽만 고치면 이 경로에서만 문턱선이 틀린 높이에 선다.
+    """
+    analysis = analyze_profile(np.full(201, 180.0), threshold_fraction=0.3)
+    assert analysis.threshold_fraction == pytest.approx(0.3)
+    assert analysis.left_px is None and analysis.right_px is None
+```
+
+**4) `self._plot.items()`가 어디서 온 것인지 적는다.**
+
+`PlotWidget.__getattr__`이 `PlotItem`으로 넘기지 않는다. `QGraphicsView`가 이미
+`items`를 갖고 있어서 씬 그래프를 직접 읽는다. 지금은 그게 **더 강한** 성질이지만
+(그려진 것을 그대로 본다), `_plot`이 `PlotItem`으로 바뀌면 조용히 깨진다.
+
+- [ ] **Step 4: 주석 한 줄**
+
+`ebl_gap_gui/profile_plot.py`의 `threshold_lines()`에 붙인다.
+
+```python
+    def threshold_lines(self) -> list[pg.InfiniteLine]:
+        """그려진 가로 문턱선들. 테스트가 그림 자체를 검사하기 위한 것이다.
+
+        items()는 PlotItem이 아니라 QGraphicsView의 것이다(QGraphicsView가 이미
+        items를 정의해서 PlotWidget.__getattr__이 넘기지 않는다). 씬 그래프를
+        직접 읽으므로 오히려 더 정확하다. _plot을 PlotItem으로 바꾸면 여기가
+        깨진다.
+        """
+```
+
+**5) 대표 라인 규칙을 엔진으로 옮긴다.**
+
+`_show_representative_line`의 중앙값 선택은 계측 결과를 어떻게 대표시킬지에 대한
+결정이지 위젯 배치가 아니다. 스펙 3절은 계산을 GUI에 두지 말라고 한다. 엔진에 있으면
+Qt 없이 검증할 수 있고, Task 21이 이 값을 스핀박스 초기값으로 쓰기 직전에 옮기는
+것이 나중에 옮기는 것보다 싸다.
+
+- [ ] **Step 5: `ebl_gap/stats.py`에 `representative_line`을 만든다 (RED 먼저)**
+
+`tests/test_stats.py`에 추가한다.
+
+```python
+def test_representative_line_is_the_median_width_valid_line():
+    """대표 라인은 폭이 중앙값에 가장 가까운 valid 라인이다."""
+    lines = [
+        LineResult(row=0, left_px=0.0, right_px=10.0, width_px=10.0,
+                   width_nm=10.0, status="valid"),
+        LineResult(row=1, left_px=0.0, right_px=30.0, width_px=30.0,
+                   width_nm=30.0, status="valid"),
+        LineResult(row=2, left_px=0.0, right_px=20.0, width_px=20.0,
+                   width_nm=20.0, status="valid"),
+    ]
+    assert representative_line(lines).row == 2
+
+
+def test_representative_line_falls_back_to_the_first_line():
+    """valid가 하나도 없으면 첫 줄을 돌려준다.
+
+    전부 short인 이미지에서도 '왜 short인지'를 보여줄 프로파일이 필요하다.
+    """
+    lines = [LineResult(row=7, left_px=None, right_px=None, width_px=None,
+                        width_nm=None, status="short", reason="대비 없음")]
+    assert representative_line(lines).row == 7
+    assert representative_line([]) is None
+```
+
+`LineResult`의 실제 생성자 시그니처에 맞춰 인자를 조정한다 — 위 예시는 필드 이름만
+맞춰 놓은 것이다.
+
+구현은 `ebl_gap/stats.py`에:
+
+```python
+def representative_line(lines: Sequence[LineResult]) -> LineResult | None:
+    """평균을 대표하는 라인 하나. 폭이 중앙값에 가장 가까운 valid 라인이다.
+
+    첫 줄이 아니라 이쪽인 이유: 이 라인의 프로파일을 보고 사용자가 '평균이
+    어디서 나왔나'를 판단한다. valid가 없으면 첫 줄이라도 돌려준다 — 전부
+    short인 이미지에서 왜 short인지 볼 수단이 필요하기 때문이다.
+    """
+    if not lines:
+        return None
+    valid = [ln for ln in lines
+             if ln.status == "valid" and ln.width_nm is not None]
+    if not valid:
+        return lines[0]
+    widths_nm = sorted(ln.width_nm for ln in valid)
+    median_nm = widths_nm[len(widths_nm) // 2]
+    return min(valid, key=lambda ln: abs(ln.width_nm - median_nm))
+```
+
+`app.py`의 `_show_representative_line`은 이 함수를 부르기만 한다. 기존 GUI 테스트
+`test_representative_line_is_the_median_width_valid_line`(app 쪽)은 그대로 둔다 —
+배선이 살아 있는지를 지키는 별개의 검사다.
+
+- [ ] **Step 6: 남은 bare `angle` 지역변수**
+
+`tests/test_profile.py`의 `angle` 지역변수를 `angle_deg`로 고친다. 전역 명명 규칙에
+예외가 없다.
+
+- [ ] **Step 7: 전체 테스트와 엔진 순수성**
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
+Expected: 모두 통과 (281 + 새 테스트 4개 = 285)
+
+Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Expected: `OK`
+
+- [ ] **Step 8: 커밋**
+
+```bash
+git add ebl_gap/ ebl_gap_gui/ tests/
+git commit -m "Assert the cleared screen, not the cleared flag"
+```
+
+---
+
 ### Task 21: 라인 선택 조작, 파일 목록 레이아웃 복구
 
 스펙 7절은 오른쪽 패널에 "**선택한 라인**의 프로파일 미니 플롯"을 요구한다. Task 19는
