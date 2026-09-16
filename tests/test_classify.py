@@ -11,7 +11,7 @@ def make_analysis(**overrides) -> ProfileAnalysis:
     """
     fields = dict(i_hi_left=200.0, i_hi_right=200.0, i_lo=40.0, sigma_noise=4.0,
                   min_index=100, left_px=90.0, right_px=110.0,
-                  n_cross_left=1, n_cross_right=1)
+                  n_cross_left=1, n_cross_right=1, threshold_fraction=0.5)
     fields.update(overrides)
     return ProfileAnalysis(**fields)
 

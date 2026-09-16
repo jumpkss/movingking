@@ -26,6 +26,16 @@ class ProfileAnalysis:
     right_px: float | None
     n_cross_left: int
     n_cross_right: int
+    threshold_fraction: float
+
+    @property
+    def threshold_left(self) -> float:
+        """왼쪽 에지를 잡은 실제 밝기 문턱. _locate와 같은 식이어야 한다."""
+        return self.i_lo + self.threshold_fraction * (self.i_hi_left - self.i_lo)
+
+    @property
+    def threshold_right(self) -> float:
+        return self.i_lo + self.threshold_fraction * (self.i_hi_right - self.i_lo)
 
     @property
     def width_px(self) -> float | None:
@@ -140,6 +150,7 @@ def analyze_profile(
             right_px=None,
             n_cross_left=0,
             n_cross_right=0,
+            threshold_fraction=threshold_fraction,
         )
 
     left, right, n_left, n_right = _locate(
@@ -169,4 +180,5 @@ def analyze_profile(
         right_px=right,
         n_cross_left=n_left,
         n_cross_right=n_right,
+        threshold_fraction=threshold_fraction,
     )

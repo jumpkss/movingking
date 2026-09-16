@@ -67,6 +67,9 @@ class MainWindow(QMainWindow):
         # 새 위치에 이전 위치의 에지가 그려진 채로 남으면 사용자가 틀린 그림을
         # 보고 판단하게 된다. 다시 측정할 때 새 오버레이가 그려진다.
         self.image_view.roi_changed.connect(self.image_view.clear_overlay)
+        # 미니 플롯도 ROI에 묶여 있다. x축이 그 ROI의 정렬 좌표계이므로
+        # ROI가 움직이면 축 자체가 다른 뜻이 된다.
+        self.image_view.roi_changed.connect(self._clear_profile)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.file_panel)
@@ -160,8 +163,7 @@ class MainWindow(QMainWindow):
             return
         self._current = index
         self.image_view.set_image(self._pixels[index])
-        self.profile_plot.clear()
-        self._profiles = None
+        self._clear_profile()
 
         record = self.session.records[index]
         if record.roi_results:
@@ -227,10 +229,19 @@ class MainWindow(QMainWindow):
             target = result.lines[0].row if result.lines else None
         else:
             widths = sorted(ln.width_nm for ln in valid)
-            median = widths[len(widths) // 2]
-            target = min(valid, key=lambda ln: abs(ln.width_nm - median)).row
+            median_nm = widths[len(widths) // 2]
+            target = min(valid, key=lambda ln: abs(ln.width_nm - median_nm)).row
         if target is not None:
             self.show_line(target)
+
+    def _clear_profile(self) -> None:
+        """ROI나 이미지가 바뀌면 미니 플롯과 그 원본 프로파일 배열을 함께 버린다.
+
+        둘 중 하나만 지우면 show_line이 다른 자리의 프로파일을 현재 자리의
+        것으로 그린다.
+        """
+        self._profiles = None
+        self.profile_plot.clear()
 
     def show_line(self, row: int) -> None:
         """특정 스캔라인의 프로파일을 미니 플롯에 띄운다."""

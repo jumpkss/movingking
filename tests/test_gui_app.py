@@ -209,3 +209,41 @@ def test_open_folder_selects_first_image_exactly_once(qapp, folder, monkeypatch)
 
     assert calls == [0]
     assert window._current == 0
+
+
+def test_moving_the_roi_clears_the_profile_plot(qapp, folder):
+    """ROI를 옮기면 이전 위치의 프로파일이 남으면 안 된다.
+
+    미니 플롯은 오버레이와 마찬가지로 위치에 묶여 있다. 사용자가 ROI를 옮겨
+    놓고 플롯을 보면 다른 자리의 프로파일을 현재 자리의 것으로 읽는다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    assert window.profile_plot.has_curve()
+
+    window.image_view._roi.setPos([120, 130])
+
+    assert window.profile_plot.has_curve() is False
+    assert window._profiles is None
+
+
+def test_representative_line_is_the_median_width_valid_line(qapp, folder):
+    """대표 라인은 폭이 중앙값에 가장 가까운 valid 라인이다.
+
+    첫 줄로 바꿔도 통과하던 자리다. 평균이 어떤 프로파일에서 나왔는지
+    보여주는 것이 이 플롯의 목적이므로 규칙 자체를 고정한다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+
+    result = window.session.records[0].roi_results[0]
+    valid = [ln for ln in result.lines
+             if ln.status == "valid" and ln.width_nm is not None]
+    widths = sorted(ln.width_nm for ln in valid)
+    expected = min(valid,
+                   key=lambda ln: abs(ln.width_nm - widths[len(widths) // 2])).row
+
+    assert window.profile_plot.row() == expected
+    assert expected != result.lines[0].row  # 첫 줄로 퇴화하면 무의미한 검사다

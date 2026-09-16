@@ -21,6 +21,7 @@ class ProfilePlot(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._has_curve = False
+        self._row: int | None = None
 
         self._title = QLabel("")
         self._title.setWordWrap(True)
@@ -44,10 +45,10 @@ class ProfilePlot(QWidget):
                         pen=pg.mkPen("#1f77b4", width=1))
 
         # 좌우 문턱을 따로 그린다. 조명이 기울면 두 선의 높이가 달라진다.
-        for level, color in (
-            (analysis.i_lo + 0.5 * (analysis.i_hi_left - analysis.i_lo), "#888888"),
-            (analysis.i_lo + 0.5 * (analysis.i_hi_right - analysis.i_lo), "#bbbbbb"),
-        ):
+        # 값은 엔진이 실제로 쓴 것을 그대로 받는다. 여기서 다시 계산하면
+        # threshold_fraction이 바뀌는 순간 플롯이 거짓말을 한다.
+        for level, color in ((analysis.threshold_left, "#888888"),
+                             (analysis.threshold_right, "#bbbbbb")):
             self._plot.addItem(pg.InfiniteLine(
                 pos=level, angle=0,
                 pen=pg.mkPen(color, style=Qt.PenStyle.DashLine)))
@@ -67,14 +68,25 @@ class ProfilePlot(QWidget):
             f"행 {line.row} · {line.status}{flags} · {detail}{reason}"
         )
         self._has_curve = True
+        self._row = line.row
+
+    def threshold_lines(self) -> list[pg.InfiniteLine]:
+        """그려진 가로 문턱선들. 테스트가 그림 자체를 검사하기 위한 것이다."""
+        return [item for item in self._plot.items()
+                if isinstance(item, pg.InfiniteLine) and item.angle == 0]
 
     def clear(self) -> None:
         self._plot.clear()
         self._title.setText("")
         self._has_curve = False
+        self._row = None
 
     def has_curve(self) -> bool:
         return self._has_curve
+
+    def row(self) -> int | None:
+        """현재 표시된 스캔라인 행. 제목에서 파싱하지 않고 show_line이 받은 값이다."""
+        return self._row
 
     def title_text(self) -> str:
         return self._title.text()

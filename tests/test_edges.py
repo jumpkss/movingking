@@ -91,3 +91,20 @@ def test_asymmetric_illumination_uses_separate_left_and_right_thresholds():
     a = analyze_profile(p)
     assert a.i_hi_left > a.i_hi_right
     assert a.width_px == pytest.approx(20.0, abs=0.3)
+
+
+def test_analysis_exposes_the_thresholds_it_actually_used():
+    """문턱은 분석 결과에 실려 나온다. 소비자가 다시 계산하면 갈라진다."""
+    profile = np.array([200.0] * 20 + [40.0] * 10 + [160.0] * 20)
+
+    a50 = analyze_profile(profile, threshold_fraction=0.5)
+    assert a50.threshold_left == pytest.approx(120.0)
+    assert a50.threshold_right == pytest.approx(100.0)
+
+    a30 = analyze_profile(profile, threshold_fraction=0.3)
+    assert a30.threshold_left == pytest.approx(88.0)
+    assert a30.threshold_right == pytest.approx(76.0)
+    # 갭은 어둡고 전극은 밝다. 에지는 갭 바닥에서 바깥으로 나가며 밝기가 문턱을
+    # 처음 넘는 곳이므로, 문턱이 낮아지면 더 일찍 넘어 갭이 좁게 잡힌다.
+    # 이 관계가 깨지면 threshold_fraction이 안 먹은 것이다.
+    assert a30.width_px < a50.width_px

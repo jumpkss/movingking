@@ -65,3 +65,15 @@ def test_clear_removes_the_curve(qapp):
     plot.clear()
     assert plot.has_curve() is False
     assert plot.title_text() == ""
+
+
+def test_threshold_lines_follow_the_engine_fraction(qapp):
+    """문턱선은 엔진이 쓴 값을 따라간다. 위젯이 0.5를 박아두면 여기서 갈라진다."""
+    profile = np.array([200.0] * 20 + [40.0] * 10 + [160.0] * 20)
+    analysis = analyze_profile(profile, threshold_fraction=0.3)
+    plot = ProfilePlot()
+
+    plot.show_line(profile, valid_line(analysis), analysis)
+
+    levels = sorted(item.value() for item in plot.threshold_lines())
+    assert levels == pytest.approx([76.0, 88.0])
