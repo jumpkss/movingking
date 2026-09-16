@@ -5910,7 +5910,7 @@ Task 21로 뺀다.
 지금은 GUI가 `MeasureParams`를 바꾸지 않아 드러나지 않지만, 드러나는 순간 진단
 도구가 조용히 거짓말을 한다.
 
-- [ ] **Step 1: 문턱이 엔진에서 나오는지 검사하는 테스트 (RED)**
+- [x] **Step 1: 문턱이 엔진에서 나오는지 검사하는 테스트 (RED)**
 
 `tests/test_edges.py`에 추가한다.
 
@@ -5933,7 +5933,7 @@ def test_analysis_exposes_the_thresholds_it_actually_used():
 Run: `python -m pytest tests/test_edges.py -q -k thresholds_it_actually_used`
 Expected: `AttributeError: 'ProfileAnalysis' object has no attribute 'threshold_left'`
 
-- [ ] **Step 2: ProfileAnalysis에 threshold_fraction 필드와 두 프로퍼티 (GREEN)**
+- [x] **Step 2: ProfileAnalysis에 threshold_fraction 필드와 두 프로퍼티 (GREEN)**
 
 `ebl_gap/edges.py`. 필드 하나만 늘리고 좌우 문턱은 프로퍼티로 파생시킨다. 값 두
 개를 따로 저장하면 `i_lo`와 어긋날 수 있다.
@@ -5962,7 +5962,7 @@ class ProfileAnalysis:
 Run: `python -m pytest tests/test_edges.py -q`
 Expected: 모두 통과
 
-- [ ] **Step 3: 위젯이 엔진 값을 그리게 한다**
+- [x] **Step 3: 위젯이 엔진 값을 그리게 한다**
 
 `ebl_gap_gui/profile_plot.py`의 문턱 루프를 바꾼다.
 
@@ -5974,7 +5974,7 @@ Expected: 모두 통과
                              (analysis.threshold_right, "#bbbbbb")):
 ```
 
-- [ ] **Step 4: 위젯이 threshold_fraction을 따라가는지 검사 (RED -> GREEN)**
+- [x] **Step 4: 위젯이 threshold_fraction을 따라가는지 검사 (RED -> GREEN)**
 
 `tests/test_gui_profile_plot.py`에 추가한다. Step 3을 되돌리면 실패해야 한다.
 
@@ -6012,7 +6012,7 @@ RED 확인: Step 3을 잠시 되돌려 `threshold_fraction=0.3`인데도 `[96.0,
 "위치에 묶인 그림을 다른 위치에 남기지 않는다"였는데, 이 플롯도 똑같이 위치에
 묶여 있다.
 
-- [ ] **Step 5: 실제 드래그로 검사하는 테스트 (RED)**
+- [x] **Step 5: 실제 드래그로 검사하는 테스트 (RED)**
 
 `tests/test_gui_app.py`에 추가한다. **헬퍼로 ROI를 세팅하지 말고** `image_view`의
 ROI 객체를 실제로 움직여 신호가 나게 한다 — 이 프로젝트에서 신호가 죽어 있는데
@@ -6039,7 +6039,7 @@ def test_moving_the_roi_clears_the_profile_plot(qapp, folder):
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -q -k clears_the_profile_plot`
 Expected: 실패. `assert True is False`
 
-- [ ] **Step 6: 배선을 더한다 (GREEN)**
+- [x] **Step 6: 배선을 더한다 (GREEN)**
 
 `ebl_gap_gui/app.py`의 `__init__`, 기존 `roi_changed` 연결 옆에 붙인다.
 
@@ -6065,7 +6065,7 @@ Expected: 실패. `assert True is False`
 리뷰어가 `_show_representative_line`의 중앙값 블록을 통째로 `result.lines[0].row`로
 바꿔도 277개가 전부 통과하는 것을 확인했다. 지금 동작은 맞지만 아무도 지키지 않는다.
 
-- [ ] **Step 7: 대표 라인 규칙을 고정하는 테스트**
+- [x] **Step 7: 대표 라인 규칙을 고정하는 테스트**
 
 ```python
 def test_representative_line_is_the_median_width_valid_line(qapp, folder):
@@ -6096,13 +6096,13 @@ def test_representative_line_is_the_median_width_valid_line(qapp, folder):
 판별력을 잃으므로, 그때는 `folder` 픽스처의 합성 이미지에 기울기(`angle_deg`)나
 노이즈를 주어 폭이 행마다 달라지게 만든다.
 
-- [ ] **Step 8: median 지역변수 이름**
+- [x] **Step 8: median 지역변수 이름**
 
 `app.py`의 `_show_representative_line` 안 `median`은 nm 값이므로 전역 명명 규칙에
 따라 `median_nm`으로 바꾼다. 한 식 안에서 끝나는 길이 지역변수가 아니라 여러 줄에
 걸쳐 쓰이는 값이다.
 
-- [ ] **Step 9: 전체 테스트와 엔진 순수성**
+- [x] **Step 9: 전체 테스트와 엔진 순수성**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과 (277 + 새 테스트 4개 = 281)
@@ -6110,7 +6110,7 @@ Expected: 모두 통과 (277 + 새 테스트 4개 = 281)
 Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 Expected: `OK`
 
-- [ ] **Step 10: 커밋**
+- [x] **Step 10: 커밋**
 
 ```bash
 git add ebl_gap/edges.py ebl_gap_gui/profile_plot.py ebl_gap_gui/app.py tests/
