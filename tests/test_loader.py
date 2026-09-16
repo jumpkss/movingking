@@ -70,6 +70,39 @@ def test_custom_dose_pattern_is_honoured(tmp_path):
     assert loaded.record.dose == pytest.approx(450.0)
 
 
+def test_infinite_resolution_does_not_raise(tmp_path):
+    """TIFF도 읽히고 FEI 태그도 파싱되는데 필드 값만 이상한 경우.
+
+    int(float("inf"))는 ValueError가 아니라 OverflowError를 던지므로
+    databar_top_row 안의 좁은 except를 빠져나간다. 한 장 때문에 폴더 전체 스캔이
+    멈추면 안 된다.
+    """
+    ini = FEI_INI.replace("ResolutionY=884", "ResolutionY=inf")
+    path = tmp_path / "inf_300uC.tif"
+    tifffile.imwrite(path, np.zeros((943, 1024), dtype=np.uint8),
+                     extratags=[(34682, 's', 0, ini, True)])
+    loaded = load_image(path)
+    assert loaded.databar_top is None
+    assert "데이터바" in loaded.record.error
+    # 스케일은 정상이므로 측정은 계속할 수 있어야 한다.
+    assert loaded.record.scale is not None
+
+
+def test_nan_pixel_width_does_not_raise(tmp_path):
+    """PixelWidth=nan은 float()을 통과하고 <= 0 검사도 통과한다.
+
+    NaN 비교는 항상 거짓이므로 가드를 지나쳐 ScaleInfo가 ValueError를 던지는데,
+    그것은 MetadataNotFoundError가 아니라 좁은 except를 빠져나간다.
+    """
+    ini = FEI_INI.replace("PixelWidth=3.0517578125e-009", "PixelWidth=nan")
+    path = tmp_path / "nan_300uC.tif"
+    tifffile.imwrite(path, np.zeros((943, 1024), dtype=np.uint8),
+                     extratags=[(34682, 's', 0, ini, True)])
+    loaded = load_image(path)
+    assert loaded.record.scale is None
+    assert "스케일" in loaded.record.error
+
+
 def test_unreadable_file_produces_a_record_with_an_error(tmp_path):
     path = tmp_path / "broken.tif"
     path.write_bytes(b"not a tiff at all")

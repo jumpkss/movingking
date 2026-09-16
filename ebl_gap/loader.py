@@ -76,14 +76,33 @@ def load_image(path: str | Path, *,
         record.error = f"메타데이터를 읽지 못했다: {exc}"
         return LoadedImage(record=record, pixels=pixels, databar_top=None)
 
-    databar_top = databar_top_row(meta, pixels.shape[0])
+    # 아래 두 호출도 각각 감싼다. 둘 다 "TIFF는 읽히고 FEI 태그도 파싱되는데
+    # 필드 값만 이상한" 경우에 터지고, 그 예외는 MetadataNotFoundError가 아니다:
+    #   ResolutionY=inf  -> int(float("inf"))가 OverflowError
+    #   PixelWidth=nan   -> float()을 통과하고 <= 0 검사도 통과(NaN 비교는 항상
+    #                       거짓)한 뒤 ScaleInfo가 ValueError
+    # 한 장 때문에 폴더 전체 스캔이 멈추면 안 된다는 것이 이 함수의 존재 이유다.
+    notes: list[str] = []
+
+    try:
+        databar_top = databar_top_row(meta, pixels.shape[0])
+    except Exception as exc:
+        databar_top = None
+        notes.append(f"데이터바 위치를 읽지 못했다: {exc}")
+
     try:
         scale, warnings = scale_from_metadata(meta, pixels.shape[1])
     except MetadataNotFoundError as exc:
-        record.error = str(exc)
+        notes.append(str(exc))
+        record.error = " | ".join(notes)
+        return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
+    except Exception as exc:
+        notes.append(f"스케일을 계산하지 못했다: {exc}")
+        record.error = " | ".join(notes)
         return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
 
     record.scale = scale
-    if warnings:
-        record.error = " | ".join(warnings)
+    notes.extend(warnings)
+    if notes:
+        record.error = " | ".join(notes)
     return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
