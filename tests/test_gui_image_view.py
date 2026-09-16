@@ -40,12 +40,28 @@ def test_roi_is_clamped_to_the_image_bounds(qapp):
     assert roi.x1 <= 99 and roi.y1 <= 99
 
 
-def test_moving_the_roi_emits_roi_changed(qapp):
+def test_setting_the_roi_programmatically_emits_roi_changed(qapp):
     view = ImageView()
     view.set_image(synth_gap_image(width=512, height=512))
     seen = []
     view.roi_changed.connect(lambda: seen.append(1))
     view.set_roi(Roi(10, 10, 200, 200))
+    assert seen
+
+
+def test_dragging_the_roi_emits_roi_changed(qapp):
+    """마우스 드래그가 타는 경로를 직접 확인한다.
+
+    set_roi()는 자기 본문에서 roi_changed를 명시적으로 발신하므로, 그것만
+    테스트하면 pyqtgraph 배선이 완전히 깨져 있어도 통과한다. 실제 드래그는
+    RectROI 내부의 setPos/setSize를 거쳐 sigRegionChanged로 나오므로 그 경로를
+    직접 두드려야 한다.
+    """
+    view = ImageView()
+    view.set_image(synth_gap_image(width=512, height=512))
+    seen = []
+    view.roi_changed.connect(lambda: seen.append(1))
+    view._roi.setPos([120, 130])
     assert seen
 
 

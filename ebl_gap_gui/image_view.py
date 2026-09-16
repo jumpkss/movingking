@@ -37,7 +37,11 @@ class ImageView(QWidget):
         self._roi.addScaleHandle([0, 0], [1, 1])
         self._roi.setZValue(10)
         self._roi.setVisible(False)
-        self._roi.sigRegionChanged.connect(self.roi_changed.emit)
+        # sigRegionChanged는 ROI 객체를 인자로 넘기며 발신한다. 0-인자 Signal의
+        # emit에 직접 연결하면 PySide6가 매 변경마다 TypeError를 던지고 리스너는
+        # 호출되지 않는다 — 마우스 드래그는 전부 이 경로를 타므로, 직접 연결하면
+        # 프로그램이 set_roi()로 바꿀 때만 신호가 살아 있는 상태가 된다.
+        self._roi.sigRegionChanged.connect(lambda *_: self.roi_changed.emit())
         self._plot.addItem(self._roi)
 
         layout = QVBoxLayout(self)
