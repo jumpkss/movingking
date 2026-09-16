@@ -48,9 +48,16 @@ def record_notices(record: ImageRecord) -> list[str]:
     한 칸에 섞어 쓰던 때는 아래쪽이 어두운 멀쩡한 FEI 이미지가 실험 노트와
     요약 CSV에 `오류:`로 남았다. 리포트, CSV, 상태 표시줄이 같은 문구를 쓰도록
     한 자리에 둔다 — 갈라지면 같은 이미지가 화면과 파일에서 다르게 읽힌다.
+
+    `error`가 있어도 스케일이 잡혀 있으면 오류로 내지 않는다. `error`가 붙는
+    경로는 읽기 실패와 스케일 미확정 둘뿐이고, 둘 다 스케일이 생기는 순간
+    거짓이 된다. 캘리브레이션은 오류 메시지가 하라고 시킨 바로 그 행동이므로,
+    그러고도 `오류:`가 남으면 실험 노트가 자기가 낸 숫자를 의심하게 된다.
+    판단은 여기서 하고 `record.error`는 지우지 않는다 — 지우면 나중에 이
+    이미지의 스케일이 왜 수동인지 알 방법이 없다.
     """
     notices: list[str] = []
-    if record.error:
+    if record.error and record.scale is None:
         notices.append(f"오류: {record.error}")
     notices.extend(f"참고: {note}" for note in record.notes)
     return notices
@@ -95,7 +102,13 @@ def write_summary_csv(path: str | Path, session: Session) -> None:
                     "n_short": result.n_short,
                     "n_uncertain": result.n_uncertain,
                     "n_low_confidence": result.n_low_confidence,
-                    "warnings": " | ".join(result.warnings),
+                    # 이미지 한 장에 붙은 안내도 함께 싣는다. ROI별 경고만 싣던
+                    # 때는 HFW 불일치 — 보고되는 모든 nm를 조용히 편향시키는
+                    # 유일한 조건 — 이 요약 CSV에서 통째로 사라졌고, 픽셀 크기가
+                    # 세 배 틀렸을 수 있는 이미지가 출처 `fei_metadata`에 경고
+                    # 칸이 빈 가장 믿음직한 행으로 남았다.
+                    "warnings": " | ".join([*record_notices(record),
+                                            *result.warnings]),
                 })
 
 

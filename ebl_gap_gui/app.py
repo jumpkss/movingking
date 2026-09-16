@@ -301,7 +301,13 @@ class MainWindow(QMainWindow):
         if self.session.records:
             # 첫 장 선택은 set_records가 발신하는 selection_changed(0)이 한다.
             # 여기서 또 부르면 렌더와 ROI 리셋이 두 번 돈다.
-            self._set_status(f"{len(self.session.records)}장 불러옴")
+            #
+            # 그 선택이 띄운 안내를 덮지 않고 이어 붙인다. 덮어쓰던 때는 폴더의
+            # 0번에 붙은 안내만 화면에서 사라졌다 — 사용자가 클릭하지 않아도
+            # 선택되는 유일한 장이라 다시 띄울 기회가 없는 쪽이다.
+            loaded = f"{len(self.session.records)}장 불러옴"
+            notice = self._record_notice_line(self.session.records[0])
+            self._set_status(f"{loaded} | {notice}" if notice else loaded)
         else:
             self.image_view.set_image(np.empty((0, 0)))
             self.result_panel.clear()
@@ -343,15 +349,24 @@ class MainWindow(QMainWindow):
             self.result_panel.show_result(record.roi_results[0])
         else:
             self.result_panel.clear()
-        # 상태 표시줄도 리포트/CSV와 같은 문구를 쓴다. 채널이 화면에서만
-        # 뭉개지면 사용자가 파일을 열었을 때 다른 이야기를 읽게 된다.
-        notices = record_notices(record)
-        message = (f"{record.path.name}: {' | '.join(notices)}" if notices
-                   else record.path.name)
+        message = self._record_notice_line(record) or record.path.name
         if released:
             message = (f"{message} | 각도 고정을 해제했습니다 — "
                        "이 이미지의 각도로 다시 추정합니다")
         self._set_status(message)
+
+    @staticmethod
+    def _record_notice_line(record) -> str:
+        """이미지에 붙은 안내를 파일 이름과 함께 한 줄로. 없으면 빈 문자열.
+
+        상태 표시줄도 리포트/CSV와 같은 문구를 쓴다. 채널이 화면에서만 뭉개지면
+        사용자가 파일을 열었을 때 다른 이야기를 읽게 된다. 이미지 선택과 폴더
+        열기가 이 한 자리를 함께 쓰므로 두 경로의 문구가 갈라질 수 없다.
+        """
+        notices = record_notices(record)
+        if not notices:
+            return ""
+        return f"{record.path.name}: {' | '.join(notices)}"
 
     def _release_angle_lock(self, record) -> bool:
         """이미지를 떠날 때 각도 고정을 푼다. 실제로 풀었으면 True.
@@ -362,10 +377,16 @@ class MainWindow(QMainWindow):
         60.0 nm가 61.856 nm). 스핀박스는 이 이미지의 각도로 되돌린다 — 잰 적이
         있으면 그때 쓴 각도, 아직 없으면 0도.
 
-        체크박스 신호를 막는 이유는 _angle_controls_changed가 상태 표시줄을
-        "다시 측정하세요"로 덮기 때문이다. 해제 안내는 파일 이름과 함께 한 줄로
-        내야 어느 이미지 이야기인지가 남는다. try/finally로 반드시 되돌린다 —
-        막힌 채로 남으면 이후 사용자의 고정 조작이 전부 조용히 무시된다.
+        체크박스 신호를 막는 것은 방어일 뿐, 지금 이 호출에서 막히는 것은
+        없다. 이 함수는 select_image 맨 앞에서 불리고 그 끝의 _set_status가
+        무조건 다시 쓰므로, _angle_controls_changed가 끼어들어도 사용자는 그
+        줄을 보지 못한다 — 실제로 True를 False로 바꿔도 테스트가 다 통과한다.
+        (아래 _arm_angle_deg_spin의 같은 모양 가드는 다르다. 그쪽은 측정 직후
+        마지막에 불려서 막지 않으면 방금 띄운 측정값 한 줄이 실제로 덮인다.)
+        틀린 근거를 단 방어 코드는 다음 사람에게 없는 제약을 믿게 하므로,
+        코드는 남기되 이유는 사실대로 적는다. try/finally로 반드시 되돌리는
+        것은 진짜다 — 막힌 채로 남으면 이후 사용자의 고정 조작이 전부 조용히
+        무시된다.
         """
         was_locked = self.angle_lock_check.isChecked()
         blocked = self.angle_lock_check.blockSignals(True)

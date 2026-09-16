@@ -3,18 +3,22 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import tifffile
 
 from ebl_gap.dataset import Session
 from ebl_gap.export import (
     format_report,
+    record_notices,
     render_overlay,
     write_lines_csv,
     write_overlay_png,
     write_summary_csv,
 )
+from ebl_gap.loader import load_image
 from ebl_gap.measure import measure_roi
 from ebl_gap.types import ImageRecord, Roi, RoiResult, ScaleInfo
 from tests.synth import synth_gap_image
+from tests.test_metadata import FEI_INI
 
 ROI = Roi(106, 106, 405, 405)
 SCALE = ScaleInfo(nm_per_px=3.0, source="fei_metadata")
@@ -96,6 +100,24 @@ def test_summary_csv_marks_a_note_as_guidance_not_as_an_error(tmp_path):
     assert "데이터바" in row["warnings"]
 
 
+def test_a_calibrated_image_is_no_longer_reported_as_an_error():
+    """오류 메시지가 시킨 행동을 한 뒤에는 오류가 남으면 안 된다.
+
+    스케일이 없다는 것은 캘리브레이션 전까지만 참이다. 측정이 끝난 이미지 옆에
+    `오류:`가 남으면 실험 노트가 그 숫자를 의심하게 만든다. `record.error`를
+    지우지 않고 표시 시점에 판단한다 — 왜 수동 스케일인지가 기록으로 남는다.
+    """
+    record = ImageRecord(
+        path=Path("crop_300uC.png"), scale=None,
+        error="스케일 메타데이터가 없습니다 — 스케일 캘리브레이션으로 직접 지정하세요")
+    assert any(n.startswith("오류:") for n in record_notices(record))
+
+    record.scale = ScaleInfo(3.0, "manual")
+
+    assert not any(n.startswith("오류:") for n in record_notices(record))
+    assert record.error is not None, "사유 자체는 기록으로 남아 있어야 한다"
+
+
 def test_report_separates_the_two_channels(tmp_path):
     """`오류:`는 잴 수 없다는 뜻이고 `참고:`는 확인하라는 뜻이다."""
     session = Session()
@@ -112,6 +134,42 @@ def test_report_separates_the_two_channels(tmp_path):
     assert "참고: 아래쪽 250행부터" in note_block
     assert "오류:" not in note_block
     assert "오류: 이미지를 읽지 못했다" in error_block
+
+
+def test_summary_csv_carries_the_hfw_mismatch_onto_the_measured_row(tmp_path):
+    """픽셀 크기가 틀렸을 수 있다는 유일한 신호가 CSV에서 사라지면 안 된다.
+
+    HFW 불일치는 보고되는 모든 nm를 조용히 편향시킨다. 측정된 행이
+    `result.warnings`만 싣던 때는 그 이미지가 CSV에서 가장 믿음직한 행으로
+    남았다 — 출처가 `fei_metadata`이고 경고 칸이 비어 있었다.
+    """
+    ini = (FEI_INI
+           .replace("ResolutionX=1024", "ResolutionX=512")
+           .replace("ResolutionY=884", "ResolutionY=512")
+           .replace("PixelWidth=3.0517578125e-009", "PixelWidth=3.0e-009")
+           .replace("PixelHeight=3.0517578125e-009", "PixelHeight=3.0e-009")
+           .replace("HorFieldsize=3.125e-006", "HorFieldsize=9.0e-006"))
+    img = synth_gap_image(width=512, height=512, gap_nm=120.0, nm_per_px=3.0,
+                          angle_deg=4.0)
+    path = tmp_path / "pattern_320uC.tif"
+    tifffile.imwrite(path, np.clip(img, 0, 255).astype(np.uint8),
+                     extratags=[(34682, 's', 0, ini, True)])
+
+    loaded = load_image(path)
+    assert any("HFW" in note for note in loaded.record.notes), loaded.record.notes
+    loaded.record.roi_results = [measure_roi(loaded.pixels, ROI,
+                                             loaded.record.scale)]
+    session = Session()
+    session.add(loaded.record)
+
+    out = tmp_path / "summary.csv"
+    write_summary_csv(out, session)
+
+    row = list(csv.DictReader(out.open(encoding="utf-8-sig")))[0]
+    assert row["mean_nm"] != "", "측정된 행이어야 검사에 뜻이 있다"
+    assert row["scale_source"] == "fei_metadata"
+    assert "참고:" in row["warnings"]
+    assert "HFW" in row["warnings"]
 
 
 def test_lines_csv_has_one_row_per_scanline(tmp_path):

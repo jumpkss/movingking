@@ -443,6 +443,26 @@ def test_no_toolbar_action_hides_behind_the_overflow_chevron(qapp, size, title):
         f"{bar.sizeHint().width()}px다")
 
 
+def test_the_main_toolbar_takes_the_top_row(qapp):
+    """주 도구 모음이 윗줄이어야 한다. 순서를 뒤집어도 아무도 안 잡았다.
+
+    설정 도구 모음을 먼저 얹으면 그쪽이 윗줄을 잡고 주 도구 모음이 아랫줄로
+    내려간다. 폴더 열기·측정·내보내기가 이 툴의 전부인데 각도·문턱 조절값
+    아래에 놓이고, 좁은 창에서 먼저 잘려 나가는 쪽도 아랫줄이다.
+    """
+    window = MainWindow()
+    window.resize(900, 650)
+    window.show()
+    qapp.processEvents()
+
+    main_bar = _toolbar(window, "주요 동작")
+    settings_bar = _toolbar(window, "측정 설정")
+
+    assert main_bar.y() < settings_bar.y(), (
+        f"주요 동작이 y={main_bar.y()}, 측정 설정이 y={settings_bar.y()}다 — "
+        "주 도구 모음이 아랫줄로 내려갔다")
+
+
 def test_the_window_refuses_to_shrink_below_its_usable_size(qapp):
     """더 좁아지면 파일 이름 열이 패널 밖으로 나간다. 지원 하한을 Qt가 지킨다.
 
@@ -831,6 +851,50 @@ def test_opening_a_png_folder_says_what_to_do_instead_of_a_tiff_error(qapp,
     assert "스케일" in window.file_panel.status_text(0)
 
 
+def test_the_full_png_crop_workflow_leaves_no_error_in_the_report(
+        qapp, tmp_path, monkeypatch):
+    """README가 안내하는 PNG 크롭 경로 전체를 밟는다.
+
+    폴더 열기 -> 캘리브레이션 -> 측정 -> 리포트. 오류 메시지가 하라고 시킨
+    행동(스케일 캘리브레이션)을 그대로 했는데 리포트가 그 이미지를 여전히
+    `오류:`로 찍으면, 실험 노트가 자기가 낸 60 nm를 의심하게 만든다.
+    """
+    img = synth_gap_image(width=512, height=512, gap_nm=60.0, nm_per_px=3.0,
+                          angle_deg=2.0, edge_sigma_px=1.2, noise_sigma=3.0,
+                          seed=300)
+    Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)).save(
+        tmp_path / "crop_300uC.png")
+
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    before = tmp_path / "before.txt"
+    window.export_report(before)
+    assert "오류:" in before.read_text(encoding="utf-8"), \
+        "캘리브레이션 전까지는 오류가 맞다 — 그래야 뒤의 단언에 뜻이 있다"
+
+    class AcceptingDialog(CalibrationDialog):
+        """실제 다이얼로그. 모달로 멈추는 exec만 대신한다."""
+
+        def exec(self):
+            self.set_length(0.6, "µm")
+            self.set_manual_pixels(200.0)   # 600 nm / 200 px = 3.0 nm/px
+            return CalibrationDialog.Accepted
+
+    monkeypatch.setattr("ebl_gap_gui.app.CalibrationDialog", AcceptingDialog)
+    window.calibrate_current()
+    window.measure_current()
+
+    assert window.session.records[0].roi_results[0].mean_nm == pytest.approx(
+        60.0, abs=1.0)
+
+    out = tmp_path / "report.txt"
+    window.export_report(out)
+    text = out.read_text(encoding="utf-8")
+
+    assert "오류:" not in text, text
+    assert window.file_panel.status_text(0).startswith("측정")
+
+
 def test_exporting_an_overlay_with_nothing_open_says_so(qapp, tmp_path):
     """선택된 이미지가 없을 때 조용히 아무 일도 안 하면 안 된다.
 
@@ -902,6 +966,26 @@ def test_selecting_an_image_labels_its_note_as_guidance(qapp, tmp_path):
 
     assert "참고:" in window.status_text()
     assert "오류:" not in window.status_text()
+    assert "데이터바" in window.status_text()
+
+
+def test_opening_a_folder_keeps_the_first_images_notice_on_screen(qapp,
+                                                                  tmp_path):
+    """0번에 붙은 안내가 "N장 불러옴"에 덮이면 그 장에서만 안내가 사라진다.
+
+    첫 장은 사용자가 아무것도 누르지 않아도 선택되는 유일한 장이다. 다른 장은
+    클릭하면 안내가 뜨는데 0번만 안 뜨면, 폴더의 첫 이미지에 붙은 데이터바
+    경고나 스케일 안내를 아무도 못 본다.
+    """
+    write_dark_bottom_sample(tmp_path, gap_nm=60.0, dose=300)
+    write_sample(tmp_path, gap_nm=90.0, dose=400)
+
+    window = MainWindow()
+    window.open_folder(tmp_path)
+
+    assert window._current == 0
+    assert "2장 불러옴" in window.status_text()
+    assert "참고:" in window.status_text()
     assert "데이터바" in window.status_text()
 
 
