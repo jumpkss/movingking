@@ -8,6 +8,7 @@ import tifffile
 pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
+from ebl_gap.types import Roi  # noqa: E402
 from ebl_gap_gui.app import MainWindow  # noqa: E402
 from tests.synth import synth_gap_image  # noqa: E402
 from tests.test_metadata import FEI_INI  # noqa: E402
@@ -201,7 +202,8 @@ def test_switching_to_an_unreadable_image_drops_the_previous_profiles(qapp,
 
     빈 배열은 ImageView.set_image에서 일찍 빠져 roi_changed가 나지 않는다.
     그래서 ROI 경로가 대신 비워 주지 못하는 유일한 경로다. 여기서 배열이
-    남으면 show_line이 앞 이미지의 프로파일을 현재 이미지의 것으로 그린다.
+    현재 것으로 남으면 show_line이 앞 이미지의 프로파일을 현재 이미지의 것으로
+    그린다. 0번의 보관분 자체는 남아 있어야 한다 — 돌아오면 되살릴 것이다.
     """
     write_sample(tmp_path, gap_nm=90.0, dose=300)
     # 이름이 z로 시작해야 sorted()에서 뒤로 간다 — 정상 파일이 0번이어야 측정이 된다.
@@ -209,11 +211,13 @@ def test_switching_to_an_unreadable_image_drops_the_previous_profiles(qapp,
     window = MainWindow()
     window.open_folder(tmp_path)
     window.measure_current()
-    assert window._profiles is not None
+    assert window._profiles_by_index.get(0) is not None
 
     window.select_image(1)
 
-    assert window._profiles is None
+    assert window._profiles_by_index.get(1) is None
+    assert window.profile_plot.has_curve() is False
+    window.show_line(5)
     assert window.profile_plot.has_curve() is False
 
 
@@ -251,7 +255,8 @@ def test_moving_the_roi_clears_the_profile_plot(qapp, folder):
     window.image_view._roi.setPos([120, 130])
 
     assert window.profile_plot.has_curve() is False
-    assert window._profiles is None
+    assert window._profiles_by_index == {}
+    assert window._measured_rois == {}
     # 플래그가 아니라 그려진 항목을 본다. clear()가 _plot.clear()를 빼먹어도
     # has_curve()는 False라고 답하므로 플래그만으로는 아무것도 못 지킨다.
     assert window.profile_plot.threshold_lines() == []
@@ -335,15 +340,18 @@ def test_anomaly_button_is_disabled_when_every_line_is_valid(qapp, folder):
     assert window.next_anomaly_button.isEnabled() is False
 
 
-@pytest.mark.parametrize("size", [(1400, 900), (1000, 700)])
-def test_the_file_name_fits_beside_the_thumbnail_at_both_sizes(qapp, folder,
+@pytest.mark.parametrize("size", [(1400, 900), (1000, 700), (640, 480)])
+def test_the_file_name_fits_beside_the_thumbnail_at_every_size(qapp, folder,
                                                                size):
-    """좁은 창에서도 파일 이름이 살아 있다.
+    """어떤 창 크기에서도 파일 이름이 살아 있다.
 
     픽셀 값을 박아두지 않고 관계를 본다: 이름을 그리는 데 필요한 폭이 썸네일을
     뺀 나머지 칸 폭 안에 들어가야 한다. 넓은 창 하나만 검사하면 여유가 커서
     어느 변경을 되돌려도 통과한다. dose가 안 잡히는 파일에서는 이름이 행을
     구분하는 유일한 수단이다.
+
+    640x480은 이름 열을 내용 크기로 잡은 뒤에야 통과한다. Stretch로 두면
+    창이 좁아지는 만큼 이름 열이 먼저 줄어들어 실제로 이름이 잘린다.
     """
     window = MainWindow()
     window.resize(*size)
@@ -425,7 +433,7 @@ def test_measure_draws_the_representative_line_exactly_once(qapp, folder,
                                                             monkeypatch):
     """무장 중 새는 valueChanged가 같은 라인을 두 번 그리게 두지 않는다.
 
-    지금은 _profiles가 먼저 채워져 있어 두 번 그려도 결과가 같지만, 호출
+    지금은 보관분이 먼저 채워져 있어 두 번 그려도 결과가 같지만, 호출
     순서가 바뀌는 순간 무장 도중의 신호가 빈 배열을 그리게 된다.
     """
     window = MainWindow()
@@ -489,3 +497,88 @@ def test_single_anomaly_button_says_so(qapp, folder):
 
     assert window.profile_plot.row() == 50
     assert "하나" in window.status_text()
+
+
+def test_returning_to_a_measured_image_restores_its_diagnostics(qapp, folder):
+    """측정한 이미지로 돌아오면 라인 진단이 그대로 있다.
+
+    dose 시리즈를 오가며 보는 것이 이 프로그램의 사용 방식이다. 돌아올 때마다
+    ROI를 다시 끌고 다시 측정해야 하면 이상 라인 확인을 포기하게 된다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    first_roi = window.image_view.current_roi()
+    window.line_selector.setValue(40)
+
+    window.select_image(1)
+    window.select_image(0)
+
+    assert window.image_view.current_roi() == first_roi
+    assert window.line_selector.isEnabled()
+    window.line_selector.setValue(40)
+    assert window.profile_plot.row() == 40
+
+
+def test_returning_to_a_measured_image_restores_the_edge_overlay(qapp, folder):
+    """되살린 ROI 위에 에지 오버레이도 다시 그린다.
+
+    ROI와 요약과 프로파일은 돌아왔는데 그림만 없으면, 이미지 뷰 혼자
+    '이 장은 아직 안 쟀다'고 말하는 꼴이 된다. 오버레이는 되살린 그 ROI와
+    그 결과에서 그대로 다시 나오므로 어긋날 여지가 없다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    assert window.image_view.has_overlay() is True
+
+    window.select_image(1)
+    window.select_image(0)
+
+    assert window.image_view.has_overlay() is True
+
+
+def test_a_moved_roi_is_not_restored_when_you_come_back(qapp, folder):
+    """ROI를 옮겨 버린 뒤 돌아오면 되살릴 것이 없어야 한다.
+
+    Task 20이 고친 결함이 보관 기능을 타고 되살아나는 경로다. 옮긴 ROI에
+    이전 위치의 프로파일을 붙이면 x축이 다른 뜻인 채로 진단을 읽게 된다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    window.image_view._roi.setPos([120, 130])
+
+    window.select_image(1)
+    window.select_image(0)
+
+    assert window.profile_plot.has_curve() is False
+    assert window.line_selector.isEnabled() is False
+
+
+def test_opening_another_folder_does_not_resurrect_old_profiles(qapp, folder,
+                                                                tmp_path):
+    """새 폴더의 0번이 이전 폴더 0번의 보관분을 물려받으면 안 된다.
+
+    인덱스를 열쇠로 쓰므로 비우지 않으면 다른 시료의 진단이 그대로 붙는다.
+    화면 단언만으로는 부족하다 — 새 레코드에는 roi_results가 없어서 복원
+    경로가 어차피 비켜 가기 때문이다. 그래서 두 보관함 자체가 비었는지도 본다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    # 기본 위치 그대로 측정하면 새 폴더 0번의 기본 ROI와 값이 같아져서,
+    # ROI가 되살아나도 테스트가 알아채지 못한다.
+    moved = Roi(40, 50, 240, 250)
+    window.image_view.set_roi(moved)
+    window.measure_current()
+
+    other = tmp_path / "other"
+    other.mkdir()
+    write_sample(other, gap_nm=30.0, dose=500)
+    window.open_folder(other)
+
+    assert window.line_selector.isEnabled() is False
+    assert window.profile_plot.has_curve() is False
+    assert window.image_view.current_roi() != moved
+    assert window._profiles_by_index == {}
+    assert window._measured_rois == {}

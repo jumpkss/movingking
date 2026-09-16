@@ -80,17 +80,23 @@ class FilePanel(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
         header = self._table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        # dose/상태 칸은 내용만큼만 차지한다. 그래야 첫 칸이 나머지를 전부
-        # 가져가고 썸네일이 파일 이름을 밀어내지 않는다. 이름이 사라지면 dose가
-        # 파싱되지 않는 파일에서는 행을 구분할 방법이 없어진다.
+        # 이름 열은 내용에 맞춘다. Stretch로 두면 패널이 좁아질 때 이름부터
+        # 잘리는데, 이름은 dose가 안 잡히는 파일에서 행을 구분하는 유일한
+        # 수단이다. 남는 폭은 마지막 열이 먹고, 모자라면 표가 가로로 스크롤된다.
+        # Stretch였을 때는 여유가 창 크기에 따라 변했다(1400x900에서 +113px,
+        # 1000x700에서 정확히 0px, 640x480에서 -119px). 내용 크기로 잡으면
+        # 어느 크기에서도 일정한 여유가 남는다 — 글꼴이 큰 환경에서 이름이
+        # 잘리던 것이 테스트의 취약함이기 전에 레이아웃의 취약함이었다.
+        #
+        # dose/상태 칸도 내용만큼만 차지한다.
         #
         # 여기에 setMinimumSectionSize로 바닥을 까는 방법은 쓰지 않는다. 그 설정은
         # 칸별이 아니라 헤더 전체에 걸린다 — 130을 주면 dose/상태 칸까지 130이
         # 되어 366픽셀 패널을 셋이 나눠 갖고, 정작 첫 칸은 바닥값 130에 눌린다.
         # 고치려던 증상(이름이 잘림)이 그대로 남는다.
-        for column in (1, 2):
+        for column in (0, 1, 2):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
         # 썸네일이 행 높이에 눌려 들어가지 않게 행을 내용에 맞춘다.
         self._table.verticalHeader().setSectionResizeMode(
             QHeaderView.ResizeToContents)

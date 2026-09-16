@@ -35,6 +35,7 @@ from ebl_gap.loader import load_image
 from ebl_gap.measure import MeasureParams, measure_roi
 from ebl_gap.profile import extract_profiles
 from ebl_gap.stats import representative_line
+from ebl_gap.types import Roi
 from ebl_gap_gui.calibration import CalibrationDialog
 from ebl_gap_gui.dose_plot import DosePlot
 from ebl_gap_gui.image_view import ImageView
@@ -62,7 +63,11 @@ class MainWindow(QMainWindow):
         self.image_view = ImageView()
         self.result_panel = ResultPanel()
         self.profile_plot = ProfilePlot()
-        self._profiles: np.ndarray | None = None
+        # 이미지마다 따로 보관한다. dose 시리즈를 오가며 보는 것이 이 프로그램의
+        # 사용 방식인데, 현재 한 장만 들고 있으면 돌아올 때마다 다시 측정해야 한다.
+        # 열쇠는 세션 인덱스이므로 open_folder에서 반드시 함께 비운다.
+        self._profiles_by_index: dict[int, np.ndarray] = {}
+        self._measured_rois: dict[int, Roi] = {}
         self.line_selector = QSpinBox()
         self.line_selector.setPrefix("라인 ")
         self.line_selector.setEnabled(False)
@@ -172,6 +177,11 @@ class MainWindow(QMainWindow):
         self.session = Session()
         self._pixels.clear()
         self._databar_tops.clear()
+        # 보관함의 열쇠는 세션 인덱스다. 비우지 않으면 새 폴더의 0번이 이전 폴더
+        # 0번의 프로파일과 ROI를 물려받아, 다른 시료의 진단을 이 시료의 것으로
+        # 읽게 된다. 이 두 줄이 이 기능에서 가장 위험한 자리다.
+        self._profiles_by_index.clear()
+        self._measured_rois.clear()
         self._current = None
 
         for index, path in enumerate(paths):
@@ -197,10 +207,33 @@ class MainWindow(QMainWindow):
         if not (0 <= index < len(self.session.records)):
             return
         self._current = index
-        self.image_view.set_image(self._pixels[index])
-        self._clear_profile()
-
         record = self.session.records[index]
+        roi = self._measured_rois.get(index)
+
+        # set_image도 set_roi도 roi_changed를 낸다. 그 신호는 _clear_profile로
+        # 이어지고, 그것이 지금 되살리려는 바로 그 보관분을 지운다. 되돌리는
+        # 동안만 막되 try/finally로 반드시 되돌린다 — 막힌 채로 남으면 사용자가
+        # ROI를 끌어도 낡은 오버레이와 낡은 프로파일이 그대로 남는다.
+        blocked = self.image_view.blockSignals(True)
+        try:
+            self.image_view.set_image(self._pixels[index])
+            if roi is not None:
+                self.image_view.set_roi(roi)
+        finally:
+            self.image_view.blockSignals(blocked)
+
+        profiles = self._profiles_by_index.get(index)
+        if profiles is None or not record.roi_results:
+            # 보관분이 없으면 이 이미지는 아직(또는 ROI를 옮긴 뒤로) 볼 것이 없다.
+            self._reset_line_view()
+        else:
+            result = record.roi_results[0]
+            # 오버레이는 방금 되살린 그 ROI와 그 결과에서 다시 그린다. 둘이
+            # 한 쌍으로 복원되므로 위치가 어긋날 여지가 없다.
+            self.image_view.show_overlay(
+                render_overlay(self._pixels[index], roi, result))
+            self._show_representative_line(result)
+
         if record.roi_results:
             self.result_panel.show_result(record.roi_results[0])
         else:
@@ -237,8 +270,12 @@ class MainWindow(QMainWindow):
         result = measure_roi(pixels, roi, record.scale, params=self.params)
         record.roi_results = [result]  # ROI 하나만 유지한다
 
-        self._profiles = extract_profiles(pixels, roi, result.angle_deg,
-                                          along_average=self.params.along_average)
+        # 프로파일과 그것을 뽑은 ROI를 한 쌍으로 보관한다. 따로 두면 복원할 때
+        # 다른 위치의 ROI에 이 프로파일을 붙이게 된다.
+        self._profiles_by_index[self._current] = extract_profiles(
+            pixels, roi, result.angle_deg,
+            along_average=self.params.along_average)
+        self._measured_rois[self._current] = roi
         self._show_representative_line(result)
 
         self.result_panel.show_result(result)
@@ -307,15 +344,26 @@ class MainWindow(QMainWindow):
             self.line_selector.setValue(target)
 
     def _clear_profile(self) -> None:
-        """ROI나 이미지가 바뀌면 미니 플롯과 그 원본 프로파일 배열을 함께 버린다.
+        """ROI가 움직였다 — 현재 이미지의 보관분까지 버린다.
 
-        둘 중 하나만 지우면 show_line이 다른 자리의 프로파일을 현재 자리의
-        것으로 그린다.
+        보관분을 남겨두면 다음에 이 이미지로 돌아왔을 때 옮기기 전 위치의
+        프로파일이 되살아난다. 프로파일의 x축은 그 ROI의 정렬 좌표계이므로,
+        위치가 어긋난 프로파일은 축이 다른 뜻인 채로 읽히는 틀린 진단이다.
+        """
+        if self._current is not None:
+            self._profiles_by_index.pop(self._current, None)
+            self._measured_rois.pop(self._current, None)
+        self._reset_line_view()
+
+    def _reset_line_view(self) -> None:
+        """미니 플롯과 라인 조작만 비운다. 보관분은 건드리지 않는다.
+
+        이미지를 바꿀 때 쓴다 — 떠나는 이미지의 보관분은 그대로 두고 화면만
+        비워야 돌아왔을 때 되살릴 것이 남는다.
 
         조작도 같이 끈다 — 플롯이 비었는데 스핀박스만 살아 있으면 눌렀을 때
         아무 일도 안 일어나는 죽은 버튼이 된다.
         """
-        self._profiles = None
         self.profile_plot.clear()
         self.line_selector.setEnabled(False)
         for button in (self.prev_anomaly_button, self.next_anomaly_button):
@@ -323,15 +371,18 @@ class MainWindow(QMainWindow):
 
     def show_line(self, row: int) -> None:
         """특정 스캔라인의 프로파일을 미니 플롯에 띄운다."""
-        if self._profiles is None or self._current is None:
+        if self._current is None:
+            return
+        profiles = self._profiles_by_index.get(self._current)
+        if profiles is None:
             return
         record = self.session.records[self._current]
         if not record.roi_results:
             return
         result = record.roi_results[0]
-        if not (0 <= row < len(result.lines)) or row >= self._profiles.shape[0]:
+        if not (0 <= row < len(result.lines)) or row >= profiles.shape[0]:
             return
-        profile = self._profiles[row]
+        profile = profiles[row]
         self.profile_plot.show_line(profile, result.lines[row],
                                     analyze_profile(profile,
                                                     **self.params.edge_kwargs))
