@@ -31,6 +31,9 @@ class ProfilePlot(QWidget):
         self._plot.setLabel("left", "밝기")
         self._plot.showGrid(x=True, y=True, alpha=0.3)
         self._plot.setMaximumHeight(220)
+        # 기본 배치에서 이 플롯은 80픽셀까지 눌렸다. 곡선과 문턱선이 겹쳐서
+        # 아무것도 읽을 수 없는 높이다 — 진단이 목적인 위젯이므로 바닥을 깐다.
+        self.setMinimumHeight(180)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

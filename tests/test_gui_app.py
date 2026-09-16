@@ -275,3 +275,94 @@ def test_representative_line_is_the_median_width_valid_line(qapp, folder):
 
     assert window.profile_plot.row() == expected
     assert expected != result.lines[0].row  # 첫 줄로 퇴화하면 무의미한 검사다
+
+
+@pytest.fixture()
+def folder_with_short(tmp_path):
+    """갭이 닫힌 이미지 한 장. 모든 라인이 valid가 아닌 상태로 판정된다."""
+    write_sample(tmp_path, gap_nm=0.0, dose=100)
+    return tmp_path
+
+
+def test_line_spinbox_shows_that_line(qapp, folder):
+    """스핀박스에 직접 타이핑한 행이 플롯에 뜬다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+
+    window.line_selector.setValue(12)      # 실제 위젯 값 변경 -> 신호
+
+    assert window.profile_plot.row() == 12
+
+
+def test_line_spinbox_is_disabled_until_measured(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    assert window.line_selector.isEnabled() is False
+    window.measure_current()
+    assert window.line_selector.isEnabled() is True
+    assert window.line_selector.maximum() == len(
+        window.session.records[0].roi_results[0].lines) - 1
+
+
+def test_next_anomaly_button_jumps_to_a_non_valid_line(qapp, folder_with_short):
+    """'다음 이상' 버튼이 valid가 아닌 다음 라인으로 간다.
+
+    이 버튼이 특이사항 분리를 실제로 쓸 수 있게 만드는 부분이다.
+    """
+    window = MainWindow()
+    window.open_folder(folder_with_short)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    anomalies = [ln.row for ln in result.lines if ln.status != "valid"]
+    assert anomalies, "픽스처가 이상 라인을 만들어야 이 테스트가 뜻이 있다"
+
+    window.line_selector.setValue(0)
+    window.next_anomaly_button.click()     # 실제 클릭
+
+    assert window.profile_plot.row() in anomalies
+    assert window.profile_plot.row() == min(r for r in anomalies if r > 0)
+
+
+def test_anomaly_button_is_disabled_when_every_line_is_valid(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    if all(ln.status == "valid" for ln in result.lines):
+        assert window.next_anomaly_button.isEnabled() is False
+
+
+def test_the_file_name_still_fits_next_to_the_thumbnail(qapp, folder):
+    """썸네일이 파일 이름을 밀어내지 않는다.
+
+    픽셀 값을 박아두지 않고 관계를 본다: 이름을 그리는 데 필요한 폭이 썸네일을
+    뺀 나머지 칸 폭 안에 들어가야 한다.
+    """
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    window.open_folder(folder)
+
+    table = window.file_panel._table
+    name = table.item(0, 0).text()
+    needed = table.fontMetrics().horizontalAdvance(name)
+    available = table.columnWidth(0) - table.iconSize().width()
+
+    assert available >= needed, (
+        f"이름 '{name}'에 {needed}px 필요한데 {available}px 남는다")
+
+
+def test_rows_are_tall_enough_for_the_thumbnail(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    table = window.file_panel._table
+    assert table.rowHeight(0) >= table.iconSize().height()
+
+
+def test_profile_plot_has_usable_height_at_the_default_geometry(qapp):
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    qapp.processEvents()
+    assert window.profile_plot.height() >= 180

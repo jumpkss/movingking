@@ -7,6 +7,7 @@ pytest.importorskip("PySide6")
 from ebl_gap.dataset import Session  # noqa: E402
 from ebl_gap.types import ImageRecord, RoiResult, ScaleInfo  # noqa: E402
 from ebl_gap_gui.panels import FilePanel, ResultPanel, ResultTable  # noqa: E402
+from tests.synth import synth_gap_image  # noqa: E402
 
 SCALE = ScaleInfo(nm_per_px=3.0, source="fei_metadata")
 
@@ -226,6 +227,22 @@ def test_thumbnail_starts_absent(qapp):
     assert panel.has_thumbnail(0) is False
 
 
+def test_thumbnail_reaches_the_table_item(qapp):
+    """썸네일이 실제 표 항목에 붙는다.
+
+    has_thumbnail()은 딕셔너리만 본다. _fill_row의 setIcon 세 줄을 통째로
+    지워도 그 검사는 전부 통과했다 — 기능이 죽어도 초록이었다. 그래서 여기서는
+    사용자가 실제로 보는 것, 즉 표 항목의 아이콘을 직접 읽는다.
+    """
+    panel = FilePanel()
+    panel.set_records(make_records())
+    panel.set_thumbnail(0, synth_gap_image(gap_nm=50.0))
+
+    icon = panel._table.item(0, 0).icon()
+    assert icon.isNull() is False
+    assert icon.availableSizes()          # 실제 픽스맵이 들어 있다
+
+
 def test_setting_a_thumbnail_attaches_an_icon(qapp):
     import numpy as np
 
@@ -234,6 +251,9 @@ def test_setting_a_thumbnail_attaches_an_icon(qapp):
     panel.set_thumbnail(0, np.arange(64 * 64, dtype=float).reshape(64, 64))
     assert panel.has_thumbnail(0) is True
     assert panel.has_thumbnail(1) is False
+    # 딕셔너리만이 아니라 화면에 붙은 것까지 본다.
+    assert panel._table.item(0, 0).icon().isNull() is False
+    assert panel._table.item(1, 0).icon().isNull() is True
 
 
 def test_empty_pixels_do_not_attach_a_thumbnail(qapp):
@@ -243,6 +263,7 @@ def test_empty_pixels_do_not_attach_a_thumbnail(qapp):
     panel.set_records(make_records())
     panel.set_thumbnail(0, np.empty((0, 0)))
     assert panel.has_thumbnail(0) is False
+    assert panel._table.item(0, 0).icon().isNull() is True
 
 
 def test_thumbnail_survives_a_row_refresh(qapp):
@@ -253,3 +274,5 @@ def test_thumbnail_survives_a_row_refresh(qapp):
     panel.set_thumbnail(0, np.full((32, 32), 120.0))
     panel.refresh_row(0)
     assert panel.has_thumbnail(0) is True
+    # refresh_row가 항목을 새로 만들므로 아이콘을 다시 붙이지 않으면 사라진다.
+    assert panel._table.item(0, 0).icon().availableSizes()

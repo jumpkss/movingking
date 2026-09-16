@@ -20,7 +20,9 @@ from ebl_gap.types import ImageRecord, RoiResult
 
 FILE_COLUMNS = ("파일", "dose(uC)", "상태")
 
-THUMBNAIL_SIZE = 56
+# 56에서 줄였다. 좁은 파일 패널에서 56px 아이콘은 이름 칸을 29px만 남겨
+# 파일명을 통째로 생략시킨다.
+THUMBNAIL_SIZE = 40
 
 
 def to_thumbnail_icon(pixels, size: int = THUMBNAIL_SIZE) -> QIcon:
@@ -77,8 +79,21 @@ class FilePanel(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self._table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.Stretch)
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        # dose/상태 칸은 내용만큼만 차지한다. 그래야 첫 칸이 나머지를 전부
+        # 가져가고 썸네일이 파일 이름을 밀어내지 않는다. 이름이 사라지면 dose가
+        # 파싱되지 않는 파일에서는 행을 구분할 방법이 없어진다.
+        #
+        # 여기에 setMinimumSectionSize로 바닥을 까는 방법은 쓰지 않는다. 그 설정은
+        # 칸별이 아니라 헤더 전체에 걸린다 — 130을 주면 dose/상태 칸까지 130이
+        # 되어 366픽셀 패널을 셋이 나눠 갖고, 정작 첫 칸은 바닥값 130에 눌린다.
+        # 고치려던 증상(이름이 잘림)이 그대로 남는다.
+        for column in (1, 2):
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        # 썸네일이 행 높이에 눌려 들어가지 않게 행을 내용에 맞춘다.
+        self._table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents)
         self._table.currentCellChanged.connect(self._on_current_cell_changed)
         self._table.itemChanged.connect(self._on_item_changed)
 

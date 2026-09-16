@@ -10,10 +10,14 @@ from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
     QFileDialog,
+    QHBoxLayout,
     QMainWindow,
     QMessageBox,
+    QPushButton,
+    QSpinBox,
     QSplitter,
     QTabWidget,
+    QVBoxLayout,
     QWidget,
 )
 from PySide6.QtCore import Qt
@@ -59,6 +63,13 @@ class MainWindow(QMainWindow):
         self.result_panel = ResultPanel()
         self.profile_plot = ProfilePlot()
         self._profiles: np.ndarray | None = None
+        self.line_selector = QSpinBox()
+        self.line_selector.setPrefix("라인 ")
+        self.line_selector.setEnabled(False)
+        self.prev_anomaly_button = QPushButton("◀ 이상")
+        self.next_anomaly_button = QPushButton("이상 ▶")
+        for button in (self.prev_anomaly_button, self.next_anomaly_button):
+            button.setEnabled(False)
         self.result_table = ResultTable()
         self.dose_plot = DosePlot()
 
@@ -71,16 +82,35 @@ class MainWindow(QMainWindow):
         # 미니 플롯도 ROI에 묶여 있다. x축이 그 ROI의 정렬 좌표계이므로
         # ROI가 움직이면 축 자체가 다른 뜻이 된다.
         self.image_view.roi_changed.connect(self._clear_profile)
+        self.line_selector.valueChanged.connect(self.show_line)
+        self.prev_anomaly_button.clicked.connect(
+            lambda: self._jump_to_anomaly(-1))
+        self.next_anomaly_button.clicked.connect(
+            lambda: self._jump_to_anomaly(+1))
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.file_panel)
         splitter.addWidget(self.image_view)
+        # 미니 플롯과 라인 조작 줄은 한 덩어리다 — 스플리터가 둘을 갈라 놓으면
+        # 사용자가 플롯만 남기고 조작을 접어버릴 수 있다.
+        profile_box = QWidget()
+        profile_layout = QVBoxLayout(profile_box)
+        profile_layout.setContentsMargins(0, 0, 0, 0)
+        profile_layout.addWidget(self.profile_plot)
+        line_bar = QHBoxLayout()
+        line_bar.setContentsMargins(0, 0, 0, 0)
+        line_bar.addWidget(self.prev_anomaly_button)
+        line_bar.addWidget(self.line_selector)
+        line_bar.addWidget(self.next_anomaly_button)
+        line_bar.addStretch(1)
+        profile_layout.addLayout(line_bar)
+
         right = QSplitter(Qt.Vertical)
         right.addWidget(self.result_panel)
-        right.addWidget(self.profile_plot)
+        right.addWidget(profile_box)
         right.setSizes([500, 260])
         splitter.addWidget(right)
-        splitter.setSizes([260, 700, 300])
+        splitter.setSizes([360, 700, 300])
         self.setCentralWidget(splitter)
 
         tabs = QTabWidget()
@@ -89,6 +119,10 @@ class MainWindow(QMainWindow):
         dock = QDockWidget("세션", self)
         dock.setWidget(tabs)
         self.addDockWidget(Qt.BottomDockWidgetArea, dock)
+        # 바닥 도크가 중앙 영역을 눌러 미니 플롯을 80픽셀로 만들었다. 초기
+        # 배치만 줄인다 — setMaximumHeight로 막으면 결과 테이블을 넓게 보려는
+        # 사용자가 영영 늘릴 수 없게 된다.
+        self.resizeDocks([dock], [260], Qt.Vertical)
 
         self._build_toolbar()
         self.statusBar().showMessage("폴더를 열어 시작하세요")
@@ -219,23 +253,71 @@ class MainWindow(QMainWindow):
                              f"(유효 {result.n_valid} 라인)")
 
     def _show_representative_line(self, result) -> None:
-        """대표 라인 하나를 미니 플롯에 띄운다.
+        """대표 라인 하나를 미니 플롯에 띄우고 라인 조작을 무장한다.
 
         어느 라인이 대표인지는 계측 판단이므로 엔진(`representative_line`)이
         정한다. 여기는 그 결과를 화면에 올리기만 한다.
         """
         line = representative_line(result.lines)
+        self._arm_line_selector(result, 0 if line is None else line.row)
         if line is not None:
+            # 무장하면서 신호를 막았으므로 대표 라인은 여기서 한 번 직접 그린다.
             self.show_line(line.row)
+
+    def _arm_line_selector(self, result, representative_row: int) -> None:
+        """측정 결과에 맞춰 라인 조작의 범위와 활성 상태를 맞춘다."""
+        anomalies = [ln.row for ln in result.lines if ln.status != "valid"]
+        # 채우는 도중의 valueChanged가 show_line을 헛돌게 한다. try/finally로
+        # 반드시 되돌린다 — True로 남으면 이후 사용자의 스핀박스 조작이 전부
+        # 조용히 무시되고, 그것이 라인을 고르는 유일한 경로다.
+        self.line_selector.blockSignals(True)
+        try:
+            self.line_selector.setRange(0, max(0, len(result.lines) - 1))
+            self.line_selector.setValue(representative_row)
+        finally:
+            self.line_selector.blockSignals(False)
+        self.line_selector.setEnabled(bool(result.lines))
+        for button in (self.prev_anomaly_button, self.next_anomaly_button):
+            button.setEnabled(bool(anomalies))
+
+    def _jump_to_anomaly(self, step: int) -> None:
+        """현재 행에서 step 방향으로 가장 가까운 valid 아닌 행으로 간다."""
+        if self._current is None:
+            return
+        record = self.session.records[self._current]
+        if not record.roi_results:
+            return
+        rows = [ln.row for ln in record.roi_results[0].lines
+                if ln.status != "valid"]
+        if not rows:
+            return
+        current = self.line_selector.value()
+        candidates = [r for r in rows
+                      if (r > current if step > 0 else r < current)]
+        # 끝에 닿으면 반대쪽 끝으로 감는다. 이상 라인이 한 개뿐일 때도 닿을 수 있다.
+        target = (min(candidates) if step > 0 else max(candidates)) \
+            if candidates else (min(rows) if step > 0 else max(rows))
+        if target == current:
+            # 이상 라인이 하나뿐이면 setValue가 no-op이라 valueChanged가 안 난다.
+            # 그대로 두면 눌러도 아무 일이 없는 죽은 버튼이 된다.
+            self.show_line(target)
+        else:
+            self.line_selector.setValue(target)
 
     def _clear_profile(self) -> None:
         """ROI나 이미지가 바뀌면 미니 플롯과 그 원본 프로파일 배열을 함께 버린다.
 
         둘 중 하나만 지우면 show_line이 다른 자리의 프로파일을 현재 자리의
         것으로 그린다.
+
+        조작도 같이 끈다 — 플롯이 비었는데 스핀박스만 살아 있으면 눌렀을 때
+        아무 일도 안 일어나는 죽은 버튼이 된다.
         """
         self._profiles = None
         self.profile_plot.clear()
+        self.line_selector.setEnabled(False)
+        for button in (self.prev_anomaly_button, self.next_anomaly_button):
+            button.setEnabled(False)
 
     def show_line(self, row: int) -> None:
         """특정 스캔라인의 프로파일을 미니 플롯에 띄운다."""
