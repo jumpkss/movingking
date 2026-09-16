@@ -7008,3 +7008,104 @@ Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 git commit -m "Keep each image's line diagnostics when you come back to it"
 ```
 
+
+---
+
+### Task 22 수정 라운드: 이름이 "잘리지 않는다"가 아니라 "보인다"를 검사한다
+
+Task 22 구현자가 Step 3.5의 정지 조건에 걸려 멈췄고, **그 판단이 옳았다**. 내가 쓴
+전제가 산술적으로 불가능했다.
+
+**내 오류 1: `ResizeToContents`에서는 아이콘 크기가 상쇄된다.**
+
+열이 "내용에 맞는 폭"으로 정의되므로 아이콘을 키우면 열도 같이 커진다. 테스트가
+재는 `columnWidth(0) - iconSize().width()`에서 아이콘이 약분된다. 컨트롤러 실측:
+
+```
+             아이콘40          아이콘56
+(1400,900)   col0 159         col0 162
+ (900, 650)  col0 159         col0 162
+```
+
+즉 `THUMBNAIL_SIZE = 40`이 이름에 벌어 주는 폭은 **3픽셀**이다. "좁은 창에서 이름을
+지키려고 40으로 둔다"는 이전 판정의 근거가 사라졌다. 소스 상수를 직접 56으로 고쳐
+전체를 돌려도 `304 passed`다 — 이 상수는 어느 쪽이든 테스트 결과를 바꾸지 않는다.
+
+**판정: `THUMBNAIL_SIZE`는 40으로 둔다. 다만 고정하려는 시도를 그만둔다.** 근거는
+"좁은 창 보호"가 아니라 "이미 커밋돼 있고, 목록 높이를 덜 먹으면서 썸네일이 읽힌다"
+뿐이다. 이유 없는 상수에 억지 테스트를 붙이는 것이 테스트를 믿을 수 없게 만든다.
+
+**내 오류 2: 640x480이 초록이 된 것은 고쳐져서가 아니라 지표가 어긋나서다.**
+
+구현자 실측대로 이름 열이 파일 패널 뷰포트보다 넓어진다.
+
+```
+             col0   viewport   결과
+(1400,900)   159    366        보임
+ (800,600)   159    185        보임
+ (640,480)   159    130        29px 잘림 — 화면 밖
+```
+
+사용자 입장에서 이름은 여전히 못 읽는다. 생략되던 것이 화면 밖으로 밀려났을 뿐이다.
+
+- [ ] **Step 1: 사용자가 보는 것을 재는 단언으로 바꾼다**
+
+`tests/test_gui_app.py`의 이름 폭 테스트에서, `ResizeToContents` 아래서는 뜻이 없어진
+`available >= needed` 단언을 **버리고** 실제로 보이는지를 검사한다.
+
+```python
+    # ResizeToContents에서 columnWidth - iconSize는 아이콘이 약분돼 상수가 된다.
+    # 사용자가 이름을 읽을 수 있느냐는 열이 뷰포트 안에 들어오느냐로 정해진다.
+    assert table.columnWidth(0) <= table.viewport().width(), (
+        f"{size}에서 이름 열 {table.columnWidth(0)}px이 "
+        f"뷰포트 {table.viewport().width()}px를 넘는다")
+```
+
+- [ ] **Step 2: 창 최소 크기를 선언한다**
+
+640x480에서 잘리는 진짜 원인은 파일 패널의 스플리터 몫이 130px까지 줄어드는 것이다.
+이 프로그램은 이미지 뷰, 결과 패널, 프로파일 플롯, 바닥 도크를 동시에 띄운다.
+640x480에서 쓸 수 있다고 주장하는 것 자체가 거짓이다. 지원 하한을 선언하고 Qt가
+지키게 한다.
+
+`ebl_gap_gui/app.py`의 `MainWindow.__init__`:
+
+```python
+        # 지원 하한. 이보다 좁으면 파일 이름 열이 패널 밖으로 밀려나고 이미지
+        # 뷰가 쓸 수 없을 만큼 눌린다. 상수를 고르는 대신 실측으로 정했다:
+        # 800x600에서 이름 열 159px < 뷰포트 185px, 여기에 여유를 둔 값이다.
+        self.setMinimumSize(900, 650)
+```
+
+확인: `resize(640, 480)` 뒤 실제 크기가 900x650이 되는 것을 컨트롤러가 확인했다.
+
+```python
+def test_the_window_refuses_to_shrink_below_its_usable_size(qapp):
+    """더 좁아지면 파일 이름 열이 패널 밖으로 나간다. 지원 하한을 Qt가 지킨다."""
+    window = MainWindow()
+    window.resize(640, 480)
+    window.show()
+    qapp.processEvents()
+    assert (window.width(), window.height()) >= (900, 650)
+```
+
+- [ ] **Step 3: 기하 목록을 지원 범위로 맞춘다**
+
+파라미터를 `[(1400, 900), (1000, 700), (900, 650)]`로 둔다. 640x480은 이제 도달할 수
+없으므로 뺀다 — 도달 불가능한 상태를 검사하는 것은 검사가 아니다.
+
+Step 1의 새 단언이 세 기하에서 모두 통과하는지 확인하고, 이름 열
+`ResizeToContents`를 지우는 변이가 여전히 세 곳 모두에서 빨간지 확인한다.
+**`THUMBNAIL_SIZE` 변이는 이제 잡히지 않는 것이 정상이다** — 그 상수는 이름 가시성과
+무관하다는 것이 이 라운드의 결론이다. 잡히게 만들려고 단언을 더하지 않는다.
+
+- [ ] **Step 4: 전체 테스트와 커밋**
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
+Expected: 모두 통과 (304 + 1 = 305 내외)
+
+```bash
+git add ebl_gap_gui/app.py tests/test_gui_app.py
+git commit -m "Assert the file name is visible, and declare the size that makes it so"
+```
+
