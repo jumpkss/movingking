@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from ebl_gap.dataset import Session
+from ebl_gap.edges import analyze_profile
 from ebl_gap.export import (
     format_report,
     render_overlay,
@@ -28,10 +29,12 @@ from ebl_gap.export import (
 )
 from ebl_gap.loader import load_image
 from ebl_gap.measure import MeasureParams, measure_roi
+from ebl_gap.profile import extract_profiles
 from ebl_gap_gui.calibration import CalibrationDialog
 from ebl_gap_gui.dose_plot import DosePlot
 from ebl_gap_gui.image_view import ImageView
 from ebl_gap_gui.panels import FilePanel, ResultPanel, ResultTable
+from ebl_gap_gui.profile_plot import ProfilePlot
 
 IMAGE_SUFFIXES = (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp")
 
@@ -53,6 +56,8 @@ class MainWindow(QMainWindow):
         self.file_panel = FilePanel()
         self.image_view = ImageView()
         self.result_panel = ResultPanel()
+        self.profile_plot = ProfilePlot()
+        self._profiles: np.ndarray | None = None
         self.result_table = ResultTable()
         self.dose_plot = DosePlot()
 
@@ -66,7 +71,11 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self.file_panel)
         splitter.addWidget(self.image_view)
-        splitter.addWidget(self.result_panel)
+        right = QSplitter(Qt.Vertical)
+        right.addWidget(self.result_panel)
+        right.addWidget(self.profile_plot)
+        right.setSizes([500, 260])
+        splitter.addWidget(right)
         splitter.setSizes([260, 700, 300])
         self.setCentralWidget(splitter)
 
@@ -134,6 +143,8 @@ class MainWindow(QMainWindow):
             self._databar_tops[index] = loaded.databar_top
 
         self.file_panel.set_records(self.session.records)
+        for index, pixels in self._pixels.items():
+            self.file_panel.set_thumbnail(index, pixels)
         self._refresh_session_views()
         if self.session.records:
             self.select_image(0)
@@ -148,6 +159,8 @@ class MainWindow(QMainWindow):
             return
         self._current = index
         self.image_view.set_image(self._pixels[index])
+        self.profile_plot.clear()
+        self._profiles = None
 
         record = self.session.records[index]
         if record.roi_results:
@@ -186,6 +199,10 @@ class MainWindow(QMainWindow):
         result = measure_roi(pixels, roi, record.scale, params=self.params)
         record.roi_results = [result]  # ROI 하나만 유지한다
 
+        self._profiles = extract_profiles(pixels, roi, result.angle_deg,
+                                          along_average=self.params.along_average)
+        self._show_representative_line(result)
+
         self.result_panel.show_result(result)
         self.image_view.show_overlay(render_overlay(pixels, roi, result))
         self.file_panel.refresh_row(self._current)
@@ -196,6 +213,38 @@ class MainWindow(QMainWindow):
         else:
             self._set_status(f"갭 {result.mean_nm:.2f} nm "
                              f"(유효 {result.n_valid} 라인)")
+
+    def _show_representative_line(self, result) -> None:
+        """대표 라인 하나를 미니 플롯에 띄운다.
+
+        폭이 중앙값에 가장 가까운 valid 라인을 고른다. 평균이 어떤 프로파일에서
+        나왔는지 보여주는 것이 목적이므로 첫 줄보다 이쪽이 낫다.
+        """
+        valid = [ln for ln in result.lines
+                 if ln.status == "valid" and ln.width_nm is not None]
+        if not valid:
+            target = result.lines[0].row if result.lines else None
+        else:
+            widths = sorted(ln.width_nm for ln in valid)
+            median = widths[len(widths) // 2]
+            target = min(valid, key=lambda ln: abs(ln.width_nm - median)).row
+        if target is not None:
+            self.show_line(target)
+
+    def show_line(self, row: int) -> None:
+        """특정 스캔라인의 프로파일을 미니 플롯에 띄운다."""
+        if self._profiles is None or self._current is None:
+            return
+        record = self.session.records[self._current]
+        if not record.roi_results:
+            return
+        result = record.roi_results[0]
+        if not (0 <= row < len(result.lines)) or row >= self._profiles.shape[0]:
+            return
+        profile = self._profiles[row]
+        self.profile_plot.show_line(profile, result.lines[row],
+                                    analyze_profile(profile,
+                                                    **self.params.edge_kwargs))
 
     def calibrate_current(self) -> None:
         """메타데이터가 없는 이미지의 스케일을 사용자가 정한다."""

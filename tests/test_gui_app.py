@@ -147,3 +147,45 @@ def test_empty_folder_is_handled_without_crashing(qapp, tmp_path):
     window.open_folder(tmp_path)
     assert window.session.records == []
     window.measure_current()  # 예외 없이 지나가야 한다
+
+
+def test_open_folder_attaches_thumbnails(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    assert window.file_panel.has_thumbnail(0) is True
+    assert window.file_panel.has_thumbnail(1) is True
+
+
+def test_measuring_shows_a_representative_profile(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.select_image(0)
+    window.measure_current()
+    assert window.profile_plot.has_curve() is True
+    assert "valid" in window.profile_plot.title_text()
+
+
+def test_show_line_switches_to_the_requested_row(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.select_image(0)
+    window.measure_current()
+    window.show_line(5)
+    assert "행 5" in window.profile_plot.title_text()
+
+
+def test_show_line_is_ignored_before_measuring(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.select_image(0)
+    window.show_line(5)
+    assert window.profile_plot.has_curve() is False
+
+
+def test_selecting_another_image_clears_the_profile_plot(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.select_image(0)
+    window.measure_current()
+    window.select_image(1)
+    assert window.profile_plot.has_curve() is False

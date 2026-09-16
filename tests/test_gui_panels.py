@@ -218,3 +218,38 @@ def test_result_table_is_emptied_by_a_fresh_session(qapp):
     table.set_session(session)
     table.set_session(Session())
     assert table.row_count() == 0
+
+
+def test_thumbnail_starts_absent(qapp):
+    panel = FilePanel()
+    panel.set_records(make_records())
+    assert panel.has_thumbnail(0) is False
+
+
+def test_setting_a_thumbnail_attaches_an_icon(qapp):
+    import numpy as np
+
+    panel = FilePanel()
+    panel.set_records(make_records())
+    panel.set_thumbnail(0, np.arange(64 * 64, dtype=float).reshape(64, 64))
+    assert panel.has_thumbnail(0) is True
+    assert panel.has_thumbnail(1) is False
+
+
+def test_empty_pixels_do_not_attach_a_thumbnail(qapp):
+    import numpy as np
+
+    panel = FilePanel()
+    panel.set_records(make_records())
+    panel.set_thumbnail(0, np.empty((0, 0)))
+    assert panel.has_thumbnail(0) is False
+
+
+def test_thumbnail_survives_a_row_refresh(qapp):
+    import numpy as np
+
+    panel = FilePanel()
+    panel.set_records(make_records())
+    panel.set_thumbnail(0, np.full((32, 32), 120.0))
+    panel.refresh_row(0)
+    assert panel.has_thumbnail(0) is True

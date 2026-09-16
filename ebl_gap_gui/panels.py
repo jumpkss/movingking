@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+import numpy as np
+from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -17,6 +19,28 @@ from ebl_gap.dataset import Session
 from ebl_gap.types import ImageRecord, RoiResult
 
 FILE_COLUMNS = ("파일", "dose(uC)", "상태")
+
+THUMBNAIL_SIZE = 56
+
+
+def to_thumbnail_icon(pixels, size: int = THUMBNAIL_SIZE) -> QIcon:
+    """2차원 밝기 배열을 목록에 넣을 회색조 아이콘으로 만든다."""
+    array = np.asarray(pixels, dtype=np.float64)
+    if array.ndim != 2 or array.size == 0:
+        return QIcon()
+
+    lo, hi = float(array.min()), float(array.max())
+    span = hi - lo if hi > lo else 1.0
+    gray = np.clip((array - lo) / span * 255.0, 0, 255).astype(np.uint8)
+
+    step = max(1, max(gray.shape) // size)
+    gray = np.ascontiguousarray(gray[::step, ::step])
+    height, width = gray.shape
+    # .copy()로 numpy 버퍼에서 떼어낸다. 떼지 않으면 배열이 해제될 때 화면이 깨진다.
+    image = QImage(gray.data, width, height, width,
+                   QImage.Format_Grayscale8).copy()
+    return QIcon(QPixmap.fromImage(image))
+
 
 TABLE_COLUMNS = (
     ("file", "파일"),
@@ -44,9 +68,11 @@ class FilePanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._records: list[ImageRecord] = []
+        self._thumbnails: dict[int, QIcon] = {}
         self._loading = False
 
         self._table = QTableWidget(0, len(FILE_COLUMNS))
+        self._table.setIconSize(QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE))
         self._table.setHorizontalHeaderLabels(FILE_COLUMNS)
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -64,6 +90,7 @@ class FilePanel(QWidget):
         self._loading = True
         try:
             self._records = list(records)
+            self._thumbnails.clear()
             self._table.setRowCount(len(self._records))
             for index in range(len(self._records)):
                 self._fill_row(index)
@@ -86,6 +113,9 @@ class FilePanel(QWidget):
 
         name = QTableWidgetItem(record.path.name)
         name.setFlags(name.flags() & ~Qt.ItemIsEditable)
+        icon = self._thumbnails.get(index)
+        if icon is not None:
+            name.setIcon(icon)
         self._table.setItem(index, 0, name)
 
         dose = QTableWidgetItem("" if record.dose is None else f"{record.dose:g}")
@@ -153,6 +183,18 @@ class FilePanel(QWidget):
     def status_text(self, index: int) -> str:
         item = self._table.item(index, 2)
         return "" if item is None else item.text()
+
+    def set_thumbnail(self, index: int, pixels) -> None:
+        """이미지 미리보기를 목록 행에 붙인다."""
+        icon = to_thumbnail_icon(pixels)
+        if icon.isNull():
+            self._thumbnails.pop(index, None)
+        else:
+            self._thumbnails[index] = icon
+        self.refresh_row(index)
+
+    def has_thumbnail(self, index: int) -> bool:
+        return index in self._thumbnails
 
 
 class ResultPanel(QWidget):
