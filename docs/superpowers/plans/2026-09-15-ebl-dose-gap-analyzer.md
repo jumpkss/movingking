@@ -6510,8 +6510,12 @@ THUMBNAIL_SIZE = 40        # 56 -> 40. 좁은 패널에서 이름을 지우지 �
             QHeaderView.ResizeToContents)
         # 썸네일이 이름을 밀어내지 않도록 첫 칸에 바닥을 깐다. 이름이 사라지면
         # dose가 안 잡히는 파일에서는 행을 구분할 방법이 없어진다.
-        self._table.horizontalHeader().setMinimumSectionSize(
-            THUMBNAIL_SIZE + 90)
+        # 열 단위 바닥이 필요한데 setMinimumSectionSize는 헤더 전체에 걸린다
+        # (세 열이 전부 그 값으로 고정된다 — 실측 확인). 대신 dose/상태 열을
+        # 내용 크기로 줄여 이름 열이 나머지를 가져가게 한다.
+        for column in (1, 2):
+            self._table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeToContents)
 ```
 
 `ebl_gap_gui/app.py`에서 파일 패널 초기 폭을 넓힌다.
@@ -6522,7 +6526,9 @@ THUMBNAIL_SIZE = 40        # 56 -> 40. 좁은 패널에서 이름을 지우지 �
 
 - [x] **Step 4: 레이아웃을 실측으로 고정하는 테스트**
 
-`tests/test_gui_panels.py`. 픽셀 값을 박아두지 말고 **관계**를 검사한다.
+`tests/test_gui_app.py`. 이 테스트들은 `MainWindow`와 `folder` 픽스처를 쓰므로
+`tests/test_gui_panels.py`가 아니라 여기여야 한다. 픽셀 값을 박아두지 말고
+**관계**를 검사한다.
 
 ```python
 def test_the_file_name_still_fits_next_to_the_thumbnail(qapp, records):
@@ -6576,7 +6582,9 @@ RED 확인: `_fill_row`의 `setIcon` 블록을 잠시 지워 이 테스트가 �
 `setMinimumHeight(180)`을 주고, 바닥 도크의 초기 높이를 줄인다.
 
 ```python
-        dock.setMaximumHeight(260)   # 초기 배치에서만 — 사용자가 늘릴 수 있다
+        # setMaximumHeight는 영구 상한이라 사용자가 결과 테이블을 늘릴 수 없게
+        # 만든다. resizeDocks는 초기 크기만 정한다.
+        self.resizeDocks([dock], [260], Qt.Vertical)
 ```
 
 실측으로 확인한다.
@@ -6615,5 +6623,344 @@ Expected: `OK`
 ```bash
 git add ebl_gap_gui/ tests/ README.md
 git commit -m "Let the user pick a scanline and restore the file list layout"
+```
+
+
+---
+
+### Task 21 수정 라운드: 살아 있다고 말하는 테스트를 만든다
+
+Task 21에 **런타임 결함은 없다**. 리뷰어가 14가지 변이를 걸어 봤고 동작은 전부
+맞았다. 문제는 그중 **다섯 개를 지워도 293개가 전부 통과한다**는 것이다. 신호 연결
+하나가 통째로 포함돼 있다.
+
+| 지워도 초록인 것 | 위치 |
+|---|---|
+| `prev_anomaly_button.clicked` 연결 | `app.py` |
+| `_arm_line_selector`의 `blockSignals` 가드 | `app.py` |
+| dose/상태 열 `ResizeToContents` | `panels.py` |
+| `resizeDocks` | `app.py` |
+| `_clear_profile`의 조작 비활성화 | `app.py` |
+
+- [ ] **Step 1: 뒤로 가기 버튼 테스트**
+
+앞으로 가기만 테스트돼 있다. 뒤로 가기는 이 도구의 절반이다. 여러 상태가 섞인
+결과를 만들어 양쪽을 한 번에 친다.
+
+```python
+def test_anomaly_buttons_step_both_ways_and_wrap(qapp, folder):
+    """이상 라인 사이를 앞뒤로 오가고, 끝에서 반대쪽으로 감는다.
+
+    valid 라인에는 절대 서지 않는다 — 이상 라인만 보려고 누르는 버튼이다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    # 상태를 직접 심어 이상 라인 위치를 안다. 합성 이미지가 어떤 상태를 낼지에
+    # 기대지 않는 편이 픽스처가 바뀌어도 이 테스트가 뜻을 잃지 않는다.
+    marked = {3, 40, 100, 150, result.lines[-1].row}
+    result.lines = tuple(
+        replace(ln, status="no_edge") if ln.row in marked else ln
+        for ln in result.lines
+    )
+    window._arm_line_selector(result, representative_row=0)
+
+    window.line_selector.setValue(0)
+    seen = []
+    for _ in range(6):
+        window.next_anomaly_button.click()
+        seen.append(window.profile_plot.row())
+    assert seen == [3, 40, 100, 150, max(marked), 3]   # 끝에서 감긴다
+
+    back = []
+    for _ in range(3):
+        window.prev_anomaly_button.click()
+        back.append(window.profile_plot.row())
+    assert back == [max(marked), 150, 100]
+    assert all(row in marked for row in seen + back)
+```
+
+`replace`는 `dataclasses.replace`다. `_arm_line_selector`의 실제 시그니처에 맞춰
+호출을 조정한다.
+
+RED 확인: `prev_anomaly_button.clicked` 연결을 지우면 실패해야 한다.
+
+- [ ] **Step 2: 측정이 대표 라인을 정확히 한 번 그리는지**
+
+컨트롤러가 직접 확인했다: `measure_current` 중 `show_line` 호출은 `[97]` 하나이고,
+`show_line`을 monkeypatch하면 신호 경로도 잡힌다(`setValue(7)` 뒤 `[97, 7]`).
+따라서 호출 횟수로 `blockSignals` 가드를 고정할 수 있다.
+
+```python
+def test_measure_draws_the_representative_line_exactly_once(qapp, folder,
+                                                            monkeypatch):
+    """무장 중 새는 valueChanged가 같은 라인을 두 번 그리게 두지 않는다.
+
+    지금은 _profiles가 먼저 채워져 있어 두 번 그려도 결과가 같지만, 호출
+    순서가 바뀌는 순간 무장 도중의 신호가 빈 배열을 그리게 된다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    drawn: list[int] = []
+    original = window.show_line
+    monkeypatch.setattr(window, "show_line",
+                        lambda row: (drawn.append(row), original(row))[1])
+
+    window.measure_current()
+
+    assert drawn == [window.line_selector.value()], drawn
+```
+
+RED 확인: `blockSignals`/`try`/`finally`를 빼면 `[97, 97] == [97]`로 실패한다.
+
+- [ ] **Step 3: 좁은 창에서의 레이아웃 테스트**
+
+지금 레이아웃 테스트는 1400x900에서 113픽셀이나 여유가 있어서, 세 가지 변경 중
+**어느 하나만 되돌려도 통과한다**. 즉 `ResizeToContents`도 `THUMBNAIL_SIZE = 40`도
+회귀 보호가 없다. 실험실 노트북 화면이 늘 1400픽셀인 것도 아니다.
+
+두 번째 기하에서 같은 관계를 검사한다. 1000x700에서는 여유가 거의 없어 세 변경이
+모두 부하를 진다.
+
+```python
+@pytest.mark.parametrize("size", [(1400, 900), (1000, 700)])
+def test_the_file_name_fits_beside_the_thumbnail_at_both_sizes(qapp, folder,
+                                                               size):
+    """좁은 창에서도 파일 이름이 살아 있다.
+
+    넓은 창 하나만 검사하면 여유가 커서 어느 변경을 되돌려도 통과한다.
+    dose가 안 잡히는 파일에서는 이름이 행을 구분하는 유일한 수단이다.
+    """
+    window = MainWindow()
+    window.resize(*size)
+    window.show()
+    qapp.processEvents()
+    window.open_folder(folder)
+    qapp.processEvents()
+
+    table = window.file_panel._table
+    name = table.item(0, 0).text()
+    needed = table.fontMetrics().horizontalAdvance(name)
+    available = table.columnWidth(0) - table.iconSize().width()
+    assert available >= needed, (
+        f"{size}에서 이름 '{name}'에 {needed}px 필요한데 {available}px 남는다")
+```
+
+먼저 1000x700에서 현재 코드가 통과하는지 재 본다. 통과하지 못하면 그 자체가
+발견이다 — 보고하고 멈춘다. 통과하면 `THUMBNAIL_SIZE`를 56으로 되돌린 변이와
+`ResizeToContents`를 지운 변이 **둘 다** 이 테스트를 빨갛게 만드는지 확인하고
+출력을 보고서에 붙인다. 한쪽만 잡힌다면 그 기하로는 부족하니 더 좁은 값을 고른다.
+
+- [ ] **Step 4: `resizeDocks`가 실제로 바꾸는 것을 검사한다**
+
+`test_profile_plot_has_usable_height_at_the_default_geometry`는 동어반복이다.
+`setMinimumHeight(180)`인 위젯에 `height() >= 180`을 단언한다 — 스플리터가 그보다
+작게 줄 수 없다. 실제로 `resizeDocks`가 바꾸는 것은 도크다: 없으면 도크가 창의
+60%(546px)를 먹어 이미지 뷰와 결과 패널이 눌린다.
+
+기존 테스트는 두되(최소 높이 자체는 지킬 값이다) 도크를 보는 단언을 더한다.
+
+```python
+def test_the_bottom_dock_does_not_swallow_the_window(qapp):
+    """바닥 도크가 중앙 영역을 잡아먹지 않는다.
+
+    resizeDocks가 없으면 도크가 창의 60%를 가져가 이미지 뷰가 눌린다.
+    갭을 보려고 여는 프로그램에서 이미지가 가장 작으면 안 된다.
+    """
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    qapp.processEvents()
+    assert window.centralWidget().height() >= window.height() // 2
+```
+
+RED 확인: `resizeDocks` 줄을 지우면 실패해야 한다.
+
+- [ ] **Step 5: ROI를 옮기면 조작도 죽는지**
+
+`_clear_profile`의 비활성화 세 줄을 지워도 293개가 통과한다. 기존 테스트는
+`__init__` 기본값만 본다.
+
+```python
+def test_moving_the_roi_disables_the_line_controls(qapp, folder):
+    """플롯이 비었으면 선택기도 죽어야 한다. 살아 있으면 눌러도 아무 일이
+    없는 죽은 버튼이 된다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    assert window.line_selector.isEnabled()
+
+    window.image_view._roi.setPos([120, 130])
+
+    assert window.line_selector.isEnabled() is False
+    assert window.next_anomaly_button.isEnabled() is False
+    assert window.prev_anomaly_button.isEnabled() is False
+```
+
+- [ ] **Step 6: 조건부로 공허한 테스트의 전제를 고정한다**
+
+`test_anomaly_button_is_disabled_when_every_line_is_valid`의 본문이
+`if all(...)` 안에 있다. 지금은 그 가지를 타지만(리뷰어 실측: 204줄 전부 valid),
+합성 픽스처가 조금만 바뀌면 조용한 무동작이 된다. 형제 테스트처럼 전제를 단언한다.
+
+```python
+    assert all(ln.status == "valid" for ln in result.lines), \
+        "픽스처가 전부 valid여야 이 테스트가 뜻이 있다"
+    assert window.next_anomaly_button.isEnabled() is False
+```
+
+`if`를 없애고 단언으로 바꾼다.
+
+- [ ] **Step 7: 이상 라인이 하나뿐일 때 아무 일도 없어 보이는 문제**
+
+`target == current`에서 `show_line`을 직접 부르는 가지는 화면상 무동작과 구별되지
+않는다(리뷰어가 변이로 확인: 지워도 293 통과, 사용자가 보는 것도 동일). 주석은
+"죽은 버튼"을 고친다고 하는데 실제로는 고치지 않는다. 상태 표시줄로 알린다.
+
+```python
+        if target == current:
+            self.show_line(target)
+            self._set_status("이상 라인이 이것 하나입니다")
+```
+
+```python
+def test_single_anomaly_button_says_so(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    result.lines = tuple(
+        replace(ln, status="no_edge") if ln.row == 50 else ln
+        for ln in result.lines
+    )
+    window._arm_line_selector(result, representative_row=50)
+
+    window.next_anomaly_button.click()
+
+    assert window.profile_plot.row() == 50
+    assert "하나" in window.status_text()
+```
+
+- [ ] **Step 8: 행 번호가 무엇인지 README에 적는다**
+
+플롯 제목, 라인 CSV의 `row` 열, 오버레이가 모두 같은 뜻이지만 그것은 **ROI 정렬
+좌표의 행**이지 이미지의 y가 아니다. 화면 어디에도 그 말이 없다. 계측 도구에서
+좌표계가 무엇인지 말하지 않는 것은 결함이다.
+
+README의 라인 선택 설명에 붙인다.
+
+```
+   > 행 번호는 ROI를 갭 축에 맞춰 회전시킨 좌표계의 행이다. 이미지의 y 좌표가
+   > 아니다. 라인 CSV의 `row` 열, 플롯 제목, 오버레이가 모두 같은 번호를 쓴다.
+```
+
+- [ ] **Step 9: 전체 테스트**
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
+Expected: 모두 통과 (293 + 새 테스트 6개 = 299 내외)
+
+Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Expected: `OK`
+
+- [ ] **Step 10: 커밋**
+
+```bash
+git add ebl_gap_gui/ tests/ README.md
+git commit -m "Pin the parts of the line selector that could be deleted silently"
+```
+
+---
+
+### Task 22: 측정한 이미지로 돌아오면 그대로 남아 있게 한다
+
+리뷰어가 짚은 워크플로 구멍이다. 이미지 A를 측정하고 B로 갔다가 A로 돌아오면
+요약은 복원되는데 `_profiles`는 비어 있고 ROI는 기본 위치로 초기화돼 있다. 선택기와
+두 버튼은 죽어 있다. **어제 찍은 dose 시리즈에서 A의 `no_edge` 라인을 다시 보려면
+ROI를 다시 끌고 다시 측정해야 한다.** 폴더 일괄 로드와 dose-gap 곡선을 쓰는
+이유가 이미지 사이를 오가는 것인데, 오가면 진단이 사라진다.
+
+Task 19/20/21은 `_profiles`를 현재 이미지 하나만 들고 있었다. 회귀가 아니라
+처음부터 없던 기능이다.
+
+- [ ] **Step 1: 돌아왔을 때를 검사하는 테스트 (RED)**
+
+```python
+def test_returning_to_a_measured_image_restores_its_diagnostics(qapp, folder):
+    """측정한 이미지로 돌아오면 라인 진단이 그대로 있다.
+
+    dose 시리즈를 오가며 보는 것이 이 프로그램의 사용 방식이다. 돌아올 때마다
+    ROI를 다시 끌고 다시 측정해야 하면 이상 라인 확인을 포기하게 된다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    first_roi = window.image_view.current_roi()
+    window.line_selector.setValue(40)
+
+    window.select_image(1)
+    window.select_image(0)
+
+    assert window.image_view.current_roi() == first_roi
+    assert window.line_selector.isEnabled()
+    window.line_selector.setValue(40)
+    assert window.profile_plot.row() == 40
+```
+
+- [ ] **Step 2: 레코드별로 보관한다**
+
+`self._profiles: np.ndarray | None` 하나를 `self._profiles_by_index: dict[int,
+np.ndarray]`로 바꾸고, 측정한 ROI도 같이 저장한다.
+
+주의: **ROI 이동 시 삭제는 그대로 유지해야 한다.** 현재 이미지의 ROI가 움직이면
+그 이미지의 보관분을 버린다 — 그렇지 않으면 Task 20이 고친 결함(위치가 어긋난
+프로파일)이 되살아난다. `_clear_profile`은 "현재 것을 버린다"는 뜻을 유지하고,
+`select_image`는 "저장된 것이 있으면 되살린다"가 된다.
+
+```python
+    def _clear_profile(self) -> None:
+        """현재 이미지의 프로파일을 버린다. ROI가 움직였다는 뜻이므로
+        보관분도 함께 버린다 — 위치가 어긋난 프로파일은 틀린 진단이다."""
+        if self._current is not None:
+            self._profiles_by_index.pop(self._current, None)
+            self._measured_rois.pop(self._current, None)
+        ...
+```
+
+`open_folder`에서 두 사전을 모두 비운다. 이것을 빠뜨리면 새 폴더의 0번 이미지가
+이전 폴더 0번의 프로파일을 되살린다 — **가장 위험한 실수다.** 그 경우를 검사하는
+테스트를 반드시 같이 쓴다.
+
+```python
+def test_opening_another_folder_does_not_resurrect_old_profiles(qapp, folder,
+                                                                tmp_path):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+
+    other = tmp_path / "other"
+    other.mkdir()
+    write_sample(other, gap_nm=30.0, dose=500)
+    window.open_folder(other)
+
+    assert window.line_selector.isEnabled() is False
+    assert window.profile_plot.has_curve() is False
+```
+
+- [ ] **Step 3: ROI 복원이 재측정을 유발하지 않는지 확인**
+
+ROI를 프로그램적으로 되돌리면 `roi_changed`가 나고 그것이 `_clear_profile`을 불러
+방금 되살린 것을 지운다. 순서를 명시적으로 다룬다: ROI를 먼저 놓고, 신호가 지나간
+뒤에 보관분을 되살린다. 아니면 복원 중에만 신호를 막는다 — **`try/finally`로.**
+
+이 함정을 검사하는 단언이 Step 1 테스트에 이미 들어 있다(`line_selector`가 살아
+있어야 한다). 구현 중에 그것이 빨간지 먼저 확인한다.
+
+- [ ] **Step 4: 전체 테스트와 커밋**
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
+
+```bash
+git commit -m "Keep each image's line diagnostics when you come back to it"
 ```
 
