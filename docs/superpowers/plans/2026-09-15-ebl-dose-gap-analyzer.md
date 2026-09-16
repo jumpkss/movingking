@@ -3885,7 +3885,15 @@ def test_reloading_onto_the_same_row_still_announces_the_selection(qapp):
 
 
 def test_loading_flag_is_cleared_even_when_filling_a_row_raises(qapp):
-    """예외로 _loading이 True로 남으면 이후 dose 편집이 전부 조용히 무시된다."""
+    """예외로 _loading이 True로 남으면 이후 dose 편집이 전부 조용히 무시된다.
+
+    이 상태는 눈에 보이지 않는다 — 사용자는 dose를 고쳤는데 아무 일도 일어나지
+    않는 것만 본다. 그래서 플래그 불변식을 직접 확인한다.
+
+    예외 뒤에 성공하는 set_records를 한 번 끼워 넣고 셀 편집으로 확인하려 하면
+    안 된다. 그 호출이 try/finally 없이도 자기 끝에서 플래그를 내려버려서,
+    버그가 있든 없든 통과하는 테스트가 된다.
+    """
     records = make_records()
     panel = FilePanel()
     panel.set_records(records)
@@ -3895,11 +3903,7 @@ def test_loading_flag_is_cleared_even_when_filling_a_row_raises(qapp):
     with pytest.raises(AttributeError):
         panel.set_records([broken])
 
-    panel.set_records(records)
-    seen = []
-    panel.dose_edited.connect(lambda i, v: seen.append((i, v)))
-    panel._table.item(0, 1).setText("275")
-    assert seen == [(0, 275.0)]
+    assert panel._loading is False
 
 
 def test_file_panel_marks_measured_and_unmeasured_rows(qapp):
