@@ -30,6 +30,7 @@ from ebl_gap.dataset import Session
 from ebl_gap.edges import analyze_profile
 from ebl_gap.export import (
     format_report,
+    record_notices,
     render_overlay,
     write_lines_csv,
     write_overlay_png,
@@ -172,7 +173,14 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 배선
 
     def _build_toolbar(self) -> None:
-        self._build_settings_toolbar()
+        """주 도구 모음이 윗줄을 통째로 쓰고, 측정 설정은 그 아래 줄로 내린다.
+
+        한 줄을 나눠 쓰던 때는 지원 하한 900x650에서 주 도구 모음이 578px 힌트
+        대비 404px로 눌려 `라인 CSV`, `오버레이 PNG`, `요약 리포트`가 오버플로
+        뒤로 숨었다. 저장이 이 툴의 결과물을 남기는 유일한 경로이므로 가장
+        좁은 지원 크기에서 먼저 사라지면 안 되는 쪽이다. 순서도 이 이유로
+        정해진다 — 주 도구 모음을 먼저 얹어야 그것이 윗줄을 잡는다.
+        """
         bar = self.addToolBar("주요 동작")
         bar.addAction("폴더 열기", self._choose_folder)
         bar.addAction("측정", self.measure_current)
@@ -186,6 +194,8 @@ class MainWindow(QMainWindow):
                                                             "overlay.png"))
         bar.addAction("요약 리포트", lambda: self._save_as(self.export_report,
                                                            "report.txt"))
+        self.addToolBarBreak()
+        self._build_settings_toolbar()
 
     def _build_settings_toolbar(self) -> None:
         """측정 설정 도구 모음. 엔진의 조절값을 사용자에게 그대로 내준다."""
@@ -303,6 +313,7 @@ class MainWindow(QMainWindow):
         self._current = index
         record = self.session.records[index]
         roi = self._measured_rois.get(index)
+        released = self._release_angle_lock(record)
 
         # set_image도 set_roi도 roi_changed를 낸다. 그 신호는 _clear_profile로
         # 이어지고, 그것이 지금 되살리려는 바로 그 보관분을 지운다. 되돌리는
@@ -332,10 +343,40 @@ class MainWindow(QMainWindow):
             self.result_panel.show_result(record.roi_results[0])
         else:
             self.result_panel.clear()
-        if record.error:
-            self._set_status(f"{record.path.name}: {record.error}")
-        else:
-            self._set_status(record.path.name)
+        # 상태 표시줄도 리포트/CSV와 같은 문구를 쓴다. 채널이 화면에서만
+        # 뭉개지면 사용자가 파일을 열었을 때 다른 이야기를 읽게 된다.
+        notices = record_notices(record)
+        message = (f"{record.path.name}: {' | '.join(notices)}" if notices
+                   else record.path.name)
+        if released:
+            message = (f"{message} | 각도 고정을 해제했습니다 — "
+                       "이 이미지의 각도로 다시 추정합니다")
+        self._set_status(message)
+
+    def _release_angle_lock(self, record) -> bool:
+        """이미지를 떠날 때 각도 고정을 푼다. 실제로 풀었으면 True.
+
+        각도는 그 이미지의 성질이다. 고정이 전역으로 남으면 다음 이미지를 남의
+        각도로 재게 되고, 고정한 각도에는 범위 안이면 경고도 붙지 않는다
+        (리뷰어 실측: 이미지 0에서 -12도로 고정한 뒤 이미지 1을 재면 참값
+        60.0 nm가 61.856 nm). 스핀박스는 이 이미지의 각도로 되돌린다 — 잰 적이
+        있으면 그때 쓴 각도, 아직 없으면 0도.
+
+        체크박스 신호를 막는 이유는 _angle_controls_changed가 상태 표시줄을
+        "다시 측정하세요"로 덮기 때문이다. 해제 안내는 파일 이름과 함께 한 줄로
+        내야 어느 이미지 이야기인지가 남는다. try/finally로 반드시 되돌린다 —
+        막힌 채로 남으면 이후 사용자의 고정 조작이 전부 조용히 무시된다.
+        """
+        was_locked = self.angle_lock_check.isChecked()
+        blocked = self.angle_lock_check.blockSignals(True)
+        try:
+            self.angle_lock_check.setChecked(False)
+        finally:
+            self.angle_lock_check.blockSignals(blocked)
+        angle_deg = (record.roi_results[0].angle_deg
+                     if record.roi_results else 0.0)
+        self._arm_angle_deg_spin(angle_deg)
+        return was_locked
 
     def measure_current(self) -> None:
         """현재 이미지의 ROI를 측정하고 결과를 화면 전체에 반영한다."""

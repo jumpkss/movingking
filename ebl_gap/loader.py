@@ -1,7 +1,10 @@
 """이미지 한 장을 열어 픽셀, 스케일, dose, 데이터바 위치를 한 번에 돌려준다.
 
-파일을 못 읽거나 메타데이터가 없어도 예외를 던지지 않고 ImageRecord.error에 사유를
+파일을 못 읽거나 메타데이터가 없어도 예외를 던지지 않고 ImageRecord에 사유를
 적는다. 폴더를 통째로 여는 도중 한 장 때문에 전체가 멈추면 안 되기 때문이다.
+
+사유는 두 채널로 나뉜다. 측정을 못 하게 만드는 것(읽기 실패, 스케일 미확정)만
+`record.error`로 가고, 재는 데 지장이 없는 안내는 `record.notes`로 간다.
 """
 
 from __future__ import annotations
@@ -63,14 +66,17 @@ class LoadedImage:
 
 
 def _finish(record: ImageRecord, pixels, databar_top: int | None,
-            notes: list[str]) -> LoadedImage:
-    """메모를 기록에 옮기고 결과를 만든다.
+            errors: list[str], notes: list[str]) -> LoadedImage:
+    """사유를 채널별로 기록에 옮기고 결과를 만든다.
 
     데이터바 위치를 메타데이터로 확정하지 못했으면 픽셀에서 찾아보고, 찾으면
     안내를 남긴다. `measure_roi`는 `databar_top`이 있어야 ROI 침범을 거부할 수
     있으므로, 없을 때 할 수 있는 것은 말해 주는 것뿐이다. 휴리스틱 결과를
     `databar_top`에 넣어 거부 근거로 삼지는 않는다 — 아래쪽이 어두운 멀쩡한
     시료를 영영 못 재게 된다.
+
+    같은 이유로 이 안내는 `notes`로 간다. 측정을 막지 않는 휴리스틱의 결과이므로
+    `error`에 넣으면 아무 문제도 없는 FEI 이미지가 리포트에 `오류:`로 남는다.
     """
     if databar_top is None:
         try:
@@ -82,8 +88,9 @@ def _finish(record: ImageRecord, pixels, databar_top: int | None,
                 f"아래쪽 {found}행부터 데이터바로 보이는 띠가 있습니다 — "
                 f"ROI가 이 영역에 걸치지 않게 하세요"
             )
-    if notes:
-        record.error = " | ".join(notes)
+    if errors:
+        record.error = " | ".join(errors)
+    record.notes = list(notes)
     return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
 
 
@@ -101,16 +108,19 @@ def load_image(path: str | Path, *,
                            databar_top=None)
 
     databar_top: int | None = None
+    # 스케일을 못 정하면 잴 수 없다(GUI가 그 조건으로 측정을 거부한다) — errors.
+    # 그 밖의 것은 재는 데 지장이 없는 안내 — notes.
+    errors: list[str] = []
     notes: list[str] = []
 
     try:
         meta = read_fei_metadata(path)
     except MetadataNotFoundError as exc:
-        notes.append(str(exc))
-        return _finish(record, pixels, None, notes)
+        errors.append(str(exc))
+        return _finish(record, pixels, None, errors, notes)
     except Exception as exc:
-        notes.append(f"{NO_SCALE_HINT} (메타데이터를 읽지 못했다: {exc})")
-        return _finish(record, pixels, None, notes)
+        errors.append(f"{NO_SCALE_HINT} (메타데이터를 읽지 못했다: {exc})")
+        return _finish(record, pixels, None, errors, notes)
 
     # 아래 두 호출도 각각 감싼다. 둘 다 "TIFF는 읽히고 FEI 태그도 파싱되는데
     # 필드 값만 이상한" 경우에 터지고, 그 예외는 MetadataNotFoundError가 아니다:
@@ -122,17 +132,19 @@ def load_image(path: str | Path, *,
         databar_top = databar_top_row(meta, pixels.shape[0])
     except Exception as exc:
         databar_top = None
+        # 위치를 모르면 ROI 침범을 거부하지 못할 뿐, 측정 자체는 된다.
         notes.append(f"데이터바 위치를 읽지 못했다: {exc}")
 
     try:
         scale, warnings = scale_from_metadata(meta, pixels.shape[1])
     except MetadataNotFoundError as exc:
-        notes.append(f"{NO_SCALE_HINT} ({exc})")
-        return _finish(record, pixels, databar_top, notes)
+        errors.append(f"{NO_SCALE_HINT} ({exc})")
+        return _finish(record, pixels, databar_top, errors, notes)
     except Exception as exc:
-        notes.append(f"{NO_SCALE_HINT} (스케일을 계산하지 못했다: {exc})")
-        return _finish(record, pixels, databar_top, notes)
+        errors.append(f"{NO_SCALE_HINT} (스케일을 계산하지 못했다: {exc})")
+        return _finish(record, pixels, databar_top, errors, notes)
 
     record.scale = scale
+    # HFW 불일치는 스케일이 나온 뒤의 확인 요청이다. 잴 수는 있다.
     notes.extend(warnings)
-    return _finish(record, pixels, databar_top, notes)
+    return _finish(record, pixels, databar_top, errors, notes)

@@ -21,7 +21,8 @@ if TYPE_CHECKING:  # 런타임 import는 하지 않는다. loader가 tifffile/Pi
     # 끌고 오는데, ROI 측정만 하려는 호출자에게 그 값을 물릴 이유가 없다.
     from ebl_gap.loader import LoadedImage
 
-#: 자동 추정된 갭 축 각도가 이 절댓값을 넘으면 적합이 무너진 것으로 본다.
+#: 갭 축 각도가 이 절댓값을 넘으면 측정을 믿을 수 없는 것으로 본다. 추정값과
+#: 사용자가 고정한 값에 똑같이 적용한다.
 #: 스펙 4.2와 8절이 상정한 시야는 기울기 0~10도이고, 정확도 게이트도 그 범위에서만
 #: 참값을 보증한다. 거기에 스펙 상한의 절반인 5도를 여유로 얹어 15도로 둔다.
 #: 15도를 넘는 추정치는 둘 중 하나다 — 시료가 스펙이 상정한 촬영 조건 밖이거나,
@@ -116,6 +117,7 @@ def measure_roi(
             만든다. 검사는 각도가 정해진 뒤에 한다(`_lowest_scanned_row` 참조).
     """
     extra_warnings: list[str] = []
+    locked = angle_deg is not None
 
     if angle_deg is None:
         try:
@@ -123,15 +125,23 @@ def measure_roi(
         except InsufficientEdgesError as exc:
             angle_deg = 0.0
             extra_warnings.append(f"각도 자동 추정 실패, 0도로 측정함 ({exc})")
+
+    # 범위 검사는 각도의 출처를 가리지 않는다. 고정한 -70도는 추정한 -70도와
+    # 똑같이 틀린 폭을 내므로, 고정을 검사 면제로 두면 사용자가 손으로 넣은
+    # 오타만 조용히 통과한다. 권하는 행동이 다르므로 문구는 나눈다 — 추정이
+    # 무너졌으면 ROI를 고쳐야 하고, 고정값이 이상하면 입력한 숫자를 고쳐야
+    # 한다. 이미 고정한 사람에게 고정을 다시 권하면 따를 조언이 남지 않는다.
+    if abs(angle_deg) > ANGLE_SANITY_DEG:
+        if locked:
+            extra_warnings.append(
+                f"고정한 각도가 {angle_deg:.1f}도입니다 — 의도한 값인지 "
+                f"확인하세요"
+            )
         else:
-            # 사용자가 직접 고정한 각도에는 이 검사를 하지 않는다. 고정은 이
-            # 경고가 권하는 바로 그 행동이므로, 고정한 값에 다시 경고를 달면
-            # 따를 수 있는 조언이 남지 않는다.
-            if abs(angle_deg) > ANGLE_SANITY_DEG:
-                extra_warnings.append(
-                    f"갭 축 각도가 {angle_deg:.1f}도로 추정됐습니다 — ROI가 갭을 "
-                    f"제대로 가로지르는지 확인하고, 필요하면 각도를 직접 고정하세요"
-                )
+            extra_warnings.append(
+                f"갭 축 각도가 {angle_deg:.1f}도로 추정됐습니다 — ROI가 갭을 "
+                f"제대로 가로지르는지 확인하고, 필요하면 각도를 직접 고정하세요"
+            )
 
     # 데이터바 검사는 여기서 한다. 각도가 확정된 뒤라야 ROI가 실제로 훑는
     # 마지막 행을 알 수 있고, 엔진은 각도를 아는 첫 번째 자리다.

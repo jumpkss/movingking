@@ -124,6 +124,48 @@ def test_detect_databar_top_is_none_for_an_image_without_one():
     assert detect_databar_top(img) is None
 
 
+def dark_bottomed_sample():
+    """아래쪽이 어두운, 데이터바 없는 멀쩡한 시료.
+
+    실제 오검출 대상은 이런 이미지다. 기존 음성 테스트는 아래쪽 변화가 전혀
+    없는 이미지를 써서 문턱을 5배 느슨하게 해도 아무 대가가 없었다.
+
+    숫자는 두 상수를 양쪽에서 조인다. 전체 밝기 범위는 200-20=180이므로
+    `DATABAR_CONTRAST_RATIO=0.25`에서 문턱은 45다. 아래쪽 띠는 기준(116)에서
+    31만큼 떨어져 그 아래에 있다 — 비율을 0.172 밑으로 낮추면 이 시료가
+    데이터바로 둔갑한다. 위쪽 절반에는 밝은 가로 구조가 30% 섞여 있어 평균은
+    141.2로 끌려가지만 중앙값은 116에 남는다. 기준을 평균으로 바꾸면 띠와의
+    차이가 56.2가 되어 역시 둔갑한다.
+    """
+    img = np.full((500, 500), 120.0)
+    img[:400, 240:260] = 20.0   # 세로 갭 — 밝기 범위의 어두운 끝
+    img[60:135, :] = 200.0      # 위쪽의 밝은 가로 구조 — 밝은 끝
+    img[400:, :] = 85.0         # 아래쪽이 어두운 시료. 데이터바가 아니다
+    return img
+
+
+def test_detect_databar_top_leaves_a_legitimately_dark_bottom_alone():
+    """이 이미지를 데이터바로 잡으면 멀쩡한 시료에 걸치지 말라는 안내가 뜬다.
+
+    안내는 측정을 막지는 않지만, 틀린 안내를 계속 보는 사용자는 맞는 안내도
+    읽지 않게 된다.
+    """
+    assert detect_databar_top(dark_bottomed_sample()) is None
+
+
+def test_the_databar_reference_row_is_the_median_not_the_mean():
+    """위쪽 절반의 밝은 구조에 기준이 끌려가면 아래쪽이 데이터바로 둔갑한다.
+
+    `dark_bottomed_sample`의 위쪽 절반은 중앙값 116, 평균 141.2다. 평균을
+    기준으로 삼으면 띠와의 차이가 문턱 45를 넘는다.
+    """
+    img = dark_bottomed_sample()
+    top_half = img[:250].mean(axis=1)
+    assert np.median(top_half) == pytest.approx(116.0)
+    assert np.mean(top_half) == pytest.approx(141.2)
+    assert detect_databar_top(img) is None
+
+
 def test_detect_databar_top_ignores_a_band_taller_than_the_scan_area():
     """아래쪽 절반이 통째로 어두우면 데이터바가 아니라 시료의 일부다."""
     img = np.full((943, 1024), 120.0)

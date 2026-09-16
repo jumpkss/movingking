@@ -135,10 +135,17 @@ class RoiResult:
 
 @dataclass
 class ImageRecord:
-    """이미지 한 장과 거기서 나온 측정 결과들."""
+    """이미지 한 장과 거기서 나온 측정 결과들.
+
+    안내는 두 채널로 갈린다. `error`는 "이 이미지로는 측정할 수 없다"만 쓴다 —
+    파일을 못 읽었거나 스케일이 확정되지 않은 경우다. `notes`는 "측정은 되지만
+    확인하라"는 안내다. 한 채널에 섞으면 아래쪽이 어두운 멀쩡한 이미지가
+    리포트에 `오류:`로 남고 요약 CSV의 경고 칸에 들어간다.
+    """
 
     path: Path
     scale: ScaleInfo | None = None
     dose: float | None = None
     roi_results: list[RoiResult] = field(default_factory=list)
     error: str | None = None
+    notes: list[str] = field(default_factory=list)

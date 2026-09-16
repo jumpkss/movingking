@@ -132,6 +132,44 @@ def test_a_normal_tilt_does_not_trigger_the_angle_warning():
     assert not any("갭 축 각도" in w for w in result.warnings), result.warnings
 
 
+def test_a_locked_angle_outside_the_plausible_range_still_warns():
+    """고정은 검사 면제가 아니다. -70도를 잘못 넣은 사용자도 알아야 한다.
+
+    고정 자체를 되돌리라는 경고는 무의미하지만, 범위를 벗어난 값은 고정했든
+    추정했든 똑같이 틀린 갭 폭을 낸다.
+    """
+    result = measure_roi(_angle_collapse_image(), HEALTHY_ROI, FEI_SCALE,
+                         angle_deg=-70.0)
+    warning = next((w for w in result.warnings if "고정한 각도" in w), None)
+    assert warning is not None, result.warnings
+    assert "-70.0도" in warning
+    # 이미 고정한 사람에게 고정을 권하면 따를 수 있는 조언이 남지 않는다.
+    assert "고정하세요" not in warning
+
+
+def test_a_locked_angle_inside_the_range_passes_quietly():
+    """범위 안의 고정값까지 경고하면 경고가 잡음이 된다."""
+    result = measure_roi(_angle_collapse_image(), HEALTHY_ROI, FEI_SCALE,
+                         angle_deg=-12.0)
+    assert not any("각도" in w for w in result.warnings), result.warnings
+
+
+def test_the_locked_and_estimated_angle_warnings_read_differently():
+    """두 경고가 권하는 다음 행동이 다르다 — 문구도 달라야 한다.
+
+    추정이 무너졌으면 ROI를 고쳐야 하고, 고정값이 이상하면 입력한 숫자를
+    고쳐야 한다. 한 문구로 합치면 둘 중 한쪽은 엉뚱한 곳을 보게 된다.
+    """
+    estimated = measure_roi(_angle_collapse_image(), COLLAPSING_ROI, FEI_SCALE)
+    locked = measure_roi(_angle_collapse_image(), HEALTHY_ROI, FEI_SCALE,
+                         angle_deg=-70.0)
+    estimated_warning = next(w for w in estimated.warnings if "각도" in w)
+    locked_warning = next(w for w in locked.warnings if "각도" in w)
+
+    assert "ROI" in estimated_warning and "고정하세요" in estimated_warning
+    assert "ROI" not in locked_warning and "의도한" in locked_warning
+
+
 def test_an_roi_that_reaches_into_the_databar_is_refused():
     """데이터바를 걸친 ROI는 측정하지 않는다 (스펙 4.1).
 

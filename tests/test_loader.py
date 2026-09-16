@@ -61,7 +61,9 @@ def test_hfw_mismatch_warning_reaches_the_record(tmp_path):
                      extratags=[(34682, 's', 0, bad_ini, True)])
     loaded = load_image(path)
     assert loaded.record.scale is not None
-    assert "HFW" in loaded.record.error
+    # 스케일은 나왔으니 잴 수 있다 — 확인하라는 안내지 오류가 아니다.
+    assert loaded.record.error is None
+    assert any("HFW" in note for note in loaded.record.notes)
 
 
 def test_custom_dose_pattern_is_honoured(tmp_path):
@@ -83,9 +85,10 @@ def test_infinite_resolution_does_not_raise(tmp_path):
                      extratags=[(34682, 's', 0, ini, True)])
     loaded = load_image(path)
     assert loaded.databar_top is None
-    assert "데이터바" in loaded.record.error
+    assert any("데이터바" in note for note in loaded.record.notes)
     # 스케일은 정상이므로 측정은 계속할 수 있어야 한다.
     assert loaded.record.scale is not None
+    assert loaded.record.error is None
 
 
 def test_nan_pixel_width_does_not_raise(tmp_path):
@@ -161,9 +164,11 @@ def test_a_bottom_band_is_reported_when_metadata_cannot_locate_the_databar(
     loaded = load_image(path)
 
     assert loaded.databar_top is None  # 메타데이터가 없으니 확정은 못 한다
-    assert "데이터바" in loaded.record.error
-    assert "260" in loaded.record.error
-    assert "스케일" in loaded.record.error  # 원래 안내도 그대로 남는다
+    note = " | ".join(loaded.record.notes)
+    assert "데이터바" in note
+    assert "260" in note
+    # 스케일이 없는 것은 안내가 아니라 측정을 막는 사유다 — 채널이 다르다.
+    assert "스케일" in loaded.record.error
 
 
 def test_no_band_note_for_an_image_without_a_databar(tmp_path):
@@ -171,3 +176,47 @@ def test_no_band_note_for_an_image_without_a_databar(tmp_path):
     Image.fromarray(np.full((64, 64), 200, dtype=np.uint8)).save(path)
     loaded = load_image(path)
     assert "데이터바" not in loaded.record.error
+    assert not any("데이터바" in note for note in loaded.record.notes)
+
+
+def _fei_tiff_without_a_databar_field(path, data):
+    """ResolutionY가 이미지 높이와 같은 FEI TIFF — 데이터바가 없는 촬영이다."""
+    ini = (FEI_INI.replace("ResolutionY=884", f"ResolutionY={data.shape[0]}")
+                  .replace("ResolutionX=1024", f"ResolutionX={data.shape[1]}"))
+    tifffile.imwrite(path, data, extratags=[(34682, 's', 0, ini, True)])
+    return path
+
+
+def test_a_dark_bottom_on_a_measurable_image_is_a_note_not_an_error(tmp_path):
+    """멀쩡한 FEI 이미지가 아래쪽이 어둡다는 이유로 오류 취급을 받으면 안 된다.
+
+    `detect_databar_top`은 휴리스틱이고 측정을 막지도 않는다. 그런데 안내가
+    `record.error`를 타면 리포트에 `오류:`로 찍히고 요약 CSV의 경고 칸에
+    들어간다 — 아무 문제도 없는 이미지의 실험실 기록이 그렇게 남는다.
+    """
+    data = np.full((300, 400), 120, dtype=np.uint8)
+    data[250:, :] = 12  # 아래쪽이 어두운 시료
+    path = _fei_tiff_without_a_databar_field(tmp_path / "dark_300uC.tif", data)
+
+    loaded = load_image(path)
+
+    assert loaded.record.scale is not None
+    assert loaded.record.error is None, loaded.record.error
+    assert any("데이터바" in note for note in loaded.record.notes)
+
+
+def test_error_is_reserved_for_images_that_cannot_be_measured(tmp_path):
+    """`error`가 붙은 것과 스케일이 없는 것은 같은 집합이어야 한다.
+
+    GUI가 측정을 거부하는 조건이 `scale is None` 하나이므로, 그 밖의 사유로
+    `error`를 붙이면 "측정할 수 없다"는 표시가 실제로는 잴 수 있는 이미지에
+    붙는다.
+    """
+    good = _fei_tiff_without_a_databar_field(
+        tmp_path / "good_300uC.tif", np.full((300, 400), 120, dtype=np.uint8))
+    Image.fromarray(np.full((64, 64), 200, dtype=np.uint8)).save(
+        tmp_path / "crop_300uC.png")
+
+    for path in (good, tmp_path / "crop_300uC.png"):
+        record = load_image(path).record
+        assert (record.error is None) is (record.scale is not None), record

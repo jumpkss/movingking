@@ -9,6 +9,8 @@ from PIL import Image
 pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
+from PySide6.QtWidgets import QToolBar  # noqa: E402
+
 from ebl_gap.types import Roi  # noqa: E402
 from ebl_gap_gui.calibration import CalibrationDialog  # noqa: E402
 from ebl_gap_gui.app import MainWindow  # noqa: E402
@@ -409,6 +411,36 @@ def test_the_file_name_fits_beside_the_thumbnail_at_every_size(qapp, folder,
     assert table.columnWidth(0) <= table.viewport().width(), (
         f"{size}에서 이름 열 {table.columnWidth(0)}px이 "
         f"뷰포트 {table.viewport().width()}px를 넘는다")
+
+
+def _toolbar(window, title):
+    bars = [b for b in window.findChildren(QToolBar) if b.windowTitle() == title]
+    assert len(bars) == 1, f"{title} 도구 모음이 {len(bars)}개다"
+    return bars[0]
+
+
+@pytest.mark.parametrize("title", ["주요 동작", "측정 설정"])
+@pytest.mark.parametrize("size", [(1400, 900), (900, 650)])
+def test_no_toolbar_action_hides_behind_the_overflow_chevron(qapp, size, title):
+    """지원 하한에서도 도구 모음의 동작이 하나도 가려지지 않아야 한다.
+
+    측정 설정 도구 모음이 주 도구 모음과 한 줄을 나눠 쓰던 때는 900x650에서
+    주 도구 모음이 578px 힌트 대비 404px로 눌려 `라인 CSV`, `오버레이 PNG`,
+    `요약 리포트`가 오버플로 뒤로 숨었다. 눈으로 보지 않고 동작의 가시성과
+    크기 힌트로 확인한다.
+    """
+    window = MainWindow()
+    window.resize(*size)
+    window.show()
+    qapp.processEvents()
+
+    bar = _toolbar(window, title)
+    hidden = [action.text() for action in bar.actions()
+              if not bar.widgetForAction(action).isVisible()]
+    assert hidden == [], f"{size}에서 {hidden}이 오버플로 뒤에 숨는다"
+    assert bar.sizeHint().width() <= bar.width(), (
+        f"{size}에서 {title}이 {bar.width()}px인데 힌트는 "
+        f"{bar.sizeHint().width()}px다")
 
 
 def test_the_window_refuses_to_shrink_below_its_usable_size(qapp):
@@ -843,6 +875,98 @@ def test_unchecking_the_lock_returns_to_automatic_estimation(qapp, folder):
     window.measure_current()
     assert window.session.records[0].roi_results[0].angle_deg == pytest.approx(
         2.0, abs=0.5)
+
+
+def write_dark_bottom_sample(path, gap_nm, dose):
+    """아래쪽이 어두운 멀쩡한 시료. 데이터바는 없고 측정도 정상으로 된다."""
+    img = synth_gap_image(width=512, height=512, gap_nm=gap_nm, nm_per_px=3.0,
+                          angle_deg=2.0, edge_sigma_px=1.2, noise_sigma=3.0,
+                          seed=int(dose))
+    data = np.clip(img, 0, 255).astype(np.uint8)
+    data[460:, :] = 10
+    return _write_tif(path, dose, data)
+
+
+def test_selecting_an_image_labels_its_note_as_guidance(qapp, tmp_path):
+    """잴 수 있는 이미지의 안내가 상태 표시줄에서 오류로 읽히면 안 된다.
+
+    화면과 파일이 같은 문구를 써야 한다 — 상태 표시줄에서만 채널이 뭉개지면
+    사용자는 리포트를 열었을 때 다른 이야기를 읽는다.
+    """
+    write_sample(tmp_path, gap_nm=90.0, dose=300)
+    write_dark_bottom_sample(tmp_path, gap_nm=60.0, dose=400)
+    window = MainWindow()
+    window.open_folder(tmp_path)
+
+    window.file_panel.select(1)
+
+    assert "참고:" in window.status_text()
+    assert "오류:" not in window.status_text()
+    assert "데이터바" in window.status_text()
+
+
+def test_switching_images_releases_the_angle_lock(qapp, folder):
+    """각도는 그 이미지의 성질이다. 고정이 전역으로 남으면 다음 이미지를 그
+    각도로 재고, 틀린 갭 폭이 조용히 나온다. 리뷰어 실측: 이미지 0에서 -12도로
+    고정한 뒤 이미지 1을 재면 참값 60.0 nm가 61.856 nm(+3.09%)로 나왔다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    window.angle_lock_check.setChecked(True)
+    window.angle_deg_spin.setValue(-12.0)
+
+    window.file_panel.select(1)
+
+    assert window.angle_lock_check.isChecked() is False
+    window.measure_current()
+    assert window.session.records[1].roi_results[0].angle_deg == pytest.approx(
+        2.0, abs=0.5)
+
+
+def test_switching_images_puts_that_images_own_angle_in_the_spin_box(qapp,
+                                                                     folder):
+    """고정을 풀기만 하고 스핀박스에 남긴 값은 다음 고정의 출발점이 된다.
+
+    떠나는 이미지의 -12도가 남아 있으면 사용자가 새 이미지에서 고정을 켜는
+    순간 그 값이 그대로 쓰인다. 되돌릴 값은 이 이미지의 각도다 — 잰 적이
+    있으면 그때 쓴 각도, 아직 없으면 0도.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    measured_deg = window.session.records[0].roi_results[0].angle_deg
+    window.angle_lock_check.setChecked(True)
+    window.angle_deg_spin.setValue(-12.0)
+
+    window.file_panel.select(1)  # 아직 측정하지 않은 이미지
+    assert window.angle_deg_spin.value() == pytest.approx(0.0)
+
+    window.file_panel.select(0)  # 이미 잰 이미지
+    assert window.angle_deg_spin.value() == pytest.approx(measured_deg,
+                                                          abs=0.01)
+
+
+def test_releasing_the_angle_lock_is_announced_once(qapp, folder):
+    """말없이 풀면 사용자는 여전히 고정된 줄 알고 결과를 읽는다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.angle_lock_check.setChecked(True)
+    window.angle_deg_spin.setValue(-12.0)
+
+    window.file_panel.select(1)
+    assert "고정" in window.status_text()
+    assert "해제" in window.status_text()
+    # 어느 이미지를 보고 있는지도 같은 줄에 남아야 한다.
+    assert window.session.records[1].path.name in window.status_text()
+
+
+def test_switching_images_without_a_lock_says_nothing_about_it(qapp, folder):
+    """고정한 적이 없는데 해제 안내가 뜨면 안내가 잡음이 된다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.file_panel.select(1)
+    assert "해제" not in window.status_text()
 
 
 def test_measuring_puts_the_estimated_angle_into_the_spin_box(qapp, folder):

@@ -41,6 +41,21 @@ UNCERTAIN_COLOR = (255, 140, 0)
 ROI_COLOR = (255, 255, 0)
 
 
+def record_notices(record: ImageRecord) -> list[str]:
+    """이미지 한 장에 붙은 사유를 채널이 드러나는 접두사와 함께 낸다.
+
+    `오류:`는 "이 이미지로는 측정할 수 없다", `참고:`는 "측정은 되지만 확인하라".
+    한 칸에 섞어 쓰던 때는 아래쪽이 어두운 멀쩡한 FEI 이미지가 실험 노트와
+    요약 CSV에 `오류:`로 남았다. 리포트, CSV, 상태 표시줄이 같은 문구를 쓰도록
+    한 자리에 둔다 — 갈라지면 같은 이미지가 화면과 파일에서 다르게 읽힌다.
+    """
+    notices: list[str] = []
+    if record.error:
+        notices.append(f"오류: {record.error}")
+    notices.extend(f"참고: {note}" for note in record.notes)
+    return notices
+
+
 def _fmt(value, digits: int = 4) -> str:
     if value is None:
         return ""
@@ -63,7 +78,7 @@ def write_summary_csv(path: str | Path, session: Session) -> None:
                     "angle_deg": "", "mean_nm": "", "std_nm": "",
                     "n_valid": "", "n_short": "", "n_uncertain": "",
                     "n_low_confidence": "",
-                    "warnings": record.error or "",
+                    "warnings": " | ".join(record_notices(record)),
                 })
                 continue
             for index, result in enumerate(record.roi_results):
@@ -176,8 +191,8 @@ def format_report(session: Session) -> str:
     for record in session.records:
         dose = "미상" if record.dose is None else f"{record.dose:g} uC"
         lines.append(f"- {record.path.name} (dose {dose})")
-        if record.error:
-            lines.append(f"    오류: {record.error}")
+        for notice in record_notices(record):
+            lines.append(f"    {notice}")
         if not record.roi_results:
             lines.append("    측정 결과 없음")
             lines.append("")

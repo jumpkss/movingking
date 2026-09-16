@@ -82,6 +82,38 @@ def test_summary_csv_writes_empty_cells_for_unmeasured_images(tmp_path):
     assert "메타데이터" in row["warnings"]
 
 
+def test_summary_csv_marks_a_note_as_guidance_not_as_an_error(tmp_path):
+    """잴 수 있는 이미지의 안내가 오류로 기록되면 실험 노트가 거짓말을 한다."""
+    session = Session()
+    session.add(ImageRecord(
+        path=Path("dark_bottom.tif"), scale=SCALE, dose=None, roi_results=[],
+        notes=["아래쪽 250행부터 데이터바로 보이는 띠가 있습니다"]))
+    out = tmp_path / "summary.csv"
+    write_summary_csv(out, session)
+    row = list(csv.DictReader(out.open(encoding="utf-8-sig")))[0]
+    assert "참고:" in row["warnings"]
+    assert "오류:" not in row["warnings"]
+    assert "데이터바" in row["warnings"]
+
+
+def test_report_separates_the_two_channels(tmp_path):
+    """`오류:`는 잴 수 없다는 뜻이고 `참고:`는 확인하라는 뜻이다."""
+    session = Session()
+    session.add(ImageRecord(path=Path("dark_bottom.tif"), scale=SCALE,
+                            roi_results=[],
+                            notes=["아래쪽 250행부터 띠가 있습니다"]))
+    session.add(ImageRecord(path=Path("broken.tif"), scale=None,
+                            roi_results=[], error="이미지를 읽지 못했다"))
+
+    text = format_report(session)
+    note_block = text.split("- dark_bottom.tif")[1].split("- broken.tif")[0]
+    error_block = text.split("- broken.tif")[1]
+
+    assert "참고: 아래쪽 250행부터" in note_block
+    assert "오류:" not in note_block
+    assert "오류: 이미지를 읽지 못했다" in error_block
+
+
 def test_lines_csv_has_one_row_per_scanline(tmp_path):
     session, _, result = measured_session(tmp_path)
     out = tmp_path / "lines.csv"
