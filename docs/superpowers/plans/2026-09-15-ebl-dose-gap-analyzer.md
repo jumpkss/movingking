@@ -7126,3 +7126,254 @@ git add ebl_gap_gui/app.py tests/test_gui_app.py
 git commit -m "Assert the file name is visible, and declare the size that makes it so"
 ```
 
+
+---
+
+### Task 23: 거짓말하는 그림을 막고, 안 잡히던 상수들을 고정한다
+
+전체 브랜치 리뷰의 결과다. 개별 태스크 리뷰가 구조적으로 볼 수 없는 것들이었다.
+
+**1) `export_overlay`가 현재 ROI와 과거 결과를 짝지어 그린다 (차단 사유).**
+
+(roi, result) 쌍 불변식이 다른 모든 곳에서는 지켜지는데 내보내기 경로에서만 깨진다.
+`measure_current`는 쌍으로 저장하고 `select_image`는 쌍으로 복원하며 ROI가 움직이면
+화면 오버레이는 지워진다. 그런데 `export_overlay`는 **지금의** ROI를 읽어 **그때의**
+결과와 짝짓는다. `roi_changed`는 `roi_results`를 지우지 않으므로 사용자 동작 두 번이면
+도달한다. 컨트롤러 실측:
+
+```
+측정 ROI: Roi(154,154,357,357)
+옮긴 ROI: Roi(60,60,263,263) | 화면 오버레이: False (올바르게 지워짐)
+roi_results 남아 있나: True
+내보낸 PNG의 초록 에지 픽셀: 406 | x 범위 143..180
+```
+
+406개의 "valid 에지" 표시가 평탄한 금속 위에 그려진다. 이 PNG가 실험 노트에 들어간다.
+화면 불변식은 테스트가 지키는데(`test_dragging_the_roi_clears_the_stale_overlay`)
+내보내기 경로는 빠졌다. `test_export_overlay_writes_a_png`는 파일이 존재하고 크기가
+0이 아닌 것만 본다.
+
+- [ ] **Step 1: 옮긴 뒤 내보내기를 검사하는 테스트 (RED)**
+
+```python
+def test_exporting_after_moving_the_roi_does_not_draw_stale_edges(qapp, folder,
+                                                                  tmp_path):
+    """ROI를 옮긴 뒤 내보낸 PNG에 옛 에지가 그려지면 안 된다.
+
+    화면은 이미 비워진다. 그런데 파일로 나가는 그림이 현재 ROI에 과거 결과를
+    겹쳐 그리면, 실험 노트에 들어가는 것은 아무 에지도 없는 자리에 에지가
+    찍힌 사진이다. 화면보다 이쪽이 더 오래 남는다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    window.image_view._roi.setPos([60, 60])
+
+    out = tmp_path / "overlay.png"
+    window.export_overlay(str(out))
+
+    assert out.exists() is False
+    assert "측정" in window.status_text()
+```
+
+측정한 ROI가 살아 있을 때는 여전히 정상 동작하는지도 같이 검사한다.
+
+```python
+def test_exporting_right_after_measuring_still_works(qapp, folder, tmp_path):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    out = tmp_path / "overlay.png"
+    window.export_overlay(str(out))
+    assert out.exists() and out.stat().st_size > 0
+```
+
+- [ ] **Step 2: 측정에 쓰인 ROI로 그린다 (GREEN)**
+
+`export_overlay`가 `select_image`와 같은 출처를 쓰게 한다.
+
+```python
+        roi = self._measured_rois.get(self._current)
+        if roi is None:
+            self._set_status("ROI가 측정 위치에서 벗어났습니다 — 다시 측정하세요")
+            return
+```
+
+이것으로 Task 18에서 미뤄 둔 "선택 없을 때 조용한 no-op" minor도 함께 닫힌다.
+
+**2) 지워도 305개가 통과하는 상수와 규칙들.**
+
+리뷰어가 23개 의미 변이를 걸어 16개가 잡히고 7개가 살아남았다. 아래 다섯은 전부
+**생산 코드 변경 없이 테스트만** 더한다. 각 항목마다 해당 변이를 걸어 빨간 것을
+확인하고 되돌린 증거를 보고서에 붙인다.
+
+- [ ] **Step 3: short/uncertain 비율의 분모**
+
+`ebl_gap/stats.py`의 `n_total = n_valid + n_short + n_uncertain`. 변이(uncertain 제외)로
+305개가 통과한다. dose 곡선 쪽 분모는 Task 16에서 경계값으로 고정했는데, 사용자가
+결과 패널에서 실제로 읽는 경고를 만드는 엔진 쪽 분모는 빠졌다.
+
+55 valid / 5 short / 40 uncertain이면 올바른 비율 5.0%, 변이면 8.3%다. 경계값으로
+판별력 있게 만든다. `n_valid`와 `n_uncertain`을 조정해 올바른 분모에서는 문턱 바로
+아래, 틀린 분모에서는 문턱 위가 되는 조합을 고른다.
+
+같이 고칠 것: `stats.py`는 `>= 0.05`, `dose_plot.py`는 `> 0.05`를 쓴다. 정확히 5%일 때
+패널은 경고하고 곡선은 안 한다. **`>=`로 통일**하고 그 경계를 테스트로 박는다.
+
+- [ ] **Step 4: `max(MAD, resolution)`의 MAD 쪽**
+
+`stats.py:43`. resolution만 쓰는 변이는 잡히는데 MAD만 쓰는 변이는 305개 통과다.
+Task 7 판정이 "둘 중 하나만 쓰면 반쪽이 된다"고 명시했는데 반쪽이 안 지켜져 있다.
+
+300줄이 40 ± 6 nm이고 참 이상치가 없는 잡음 이미지에서, 현재 규칙은 6/300을
+이상치로 보고 resolution만 쓰면 24/300을 버린다. 정상 라인 18개가 조용히 평균에서
+빠진다. 그 상황을 테스트로 만든다(MAD가 resolution보다 크게).
+
+- [ ] **Step 5: 요약 CSV가 `result.scale`을 쓴다는 것**
+
+`export.py:66-67`. `record.scale`을 쓰는 변이가 305개 통과한다. 측정 뒤
+캘리브레이션을 다시 하면 둘이 실제로 갈라진다(`record` 5.0 manual vs `result`
+3.05 fei_metadata). 지금 코드가 옳은 쪽(그 숫자를 실제로 계산한 스케일)을 쓰는데
+아무도 안 지킨다. 측정 -> 재캘리브레이션 -> CSV 순서의 테스트를 쓴다.
+
+- [ ] **Step 6: 스펙이 정한 상수 셋**
+
+전부 변이가 안 잡힌다.
+
+- `scalebar.py`의 `MAX_BAR_WIDTH_RATIO 0.9` — 전폭 밝은 데이터바 행을 스케일바로
+  받아들이는 것을 막는 유일한 가드다. 0.9를 넘는 폭의 밝은 행이 거부되는지 검사한다.
+- `edges.py`의 `flat_fraction 0.2` — 스펙이 정한 20% 평탄부 창.
+- `edges.py`의 `hysteresis 0.1` — `multi_edge` 오판을 막는 유일한 잡음 방어다.
+  0으로 두면 잡음 있는 프로파일에서 가짜 교차가 세어진다(Task 3에서 이미 겪었다).
+
+**3) 전 구간 short인 dose 점이 곡선에서 사라진다.**
+
+`dataset.py`의 `dose_curve()`가 `mean_nm`이 없는 레코드를 건너뛴다. 그래서 갭이
+실제로 닫힌 dose가 점이 되지 않고, 빨간 X 표시도 영영 못 붙는다. 표와 CSV에는
+있지만 **dose를 고르는 곳은 곡선이다.** 리뷰어 실측: 5장 중 280 uC가 전 구간 short인
+시리즈에서 곡선 점 4개, short 표시 0개.
+
+- [ ] **Step 7: 닫힌 dose를 곡선에 남긴다**
+
+`dose_curve()`가 그런 레코드를 `mean_nm=0.0`, `all_short=True`로 돌려주게 하거나
+(반환 구조를 바꾸면 소비자가 여럿이니 주의) 별도 목록으로 돌려준다. `DosePlot`은
+그 점을 갭 0에 빨간 X로 찍는다. 리포트의 `dose - 갭 관계` 블록에도
+`280 uC: 전 구간 short` 줄을 넣는다.
+
+**이것이 이 도구의 결론이 되는 화면이다.** "이 dose에서 갭이 닫힌다"는 것이
+dose test의 답이므로, 그 점이 빠진 곡선은 답의 절반을 지운 것이다.
+
+- [ ] **Step 8: 읽기 실패 메시지를 사용자 언어로**
+
+`loader.py`가 하부 예외의 영문을 그대로 끼워 넣어 파일 목록과 상태 표시줄에
+`오류: 메타데이터를 읽지 못했다: not a TIFF file: header=b'\x89PNG'`가 뜬다. PNG
+크롭 폴더를 여는 학생은 "내 파일이 깨졌다"로 읽고 멈춘다. 올바른 다음 행동은
+스케일 캘리브레이션이다. 한 문장 덧붙인다.
+
+```python
+    notes.append("스케일 메타데이터가 없습니다 — 스케일 캘리브레이션으로 "
+                 "직접 지정하세요")
+```
+
+원문 예외는 진단에 필요하니 버리지 말고 뒤에 괄호로 남긴다.
+
+- [ ] **Step 9: 전체 테스트와 커밋**
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
+Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+
+```bash
+git commit -m "Stop the overlay export from drawing a measurement that moved"
+```
+
+---
+
+### Task 24: 각도를 사람이 잡을 수 있게 하고, 데이터바 거부를 엔진으로 옮긴다
+
+스펙 4.2/4.3/4.4가 요구하는데 어떤 태스크에도 들어가지 않은 것들이다. 태스크 사이로
+빠진 요구사항이라 개별 리뷰가 볼 수 없었다.
+
+**1) 각도 추정이 무너져도 아무도 모른다.**
+
+`estimate_angle_deg`는 `InsufficientEdgesError`를 던지거나 숫자를 돌려준다. 그 숫자가
+말이 되는지는 아무도 안 본다. 갭이 ROI 가장자리에 붙으면 Theil-Sen 적합이 무너지고,
+회전 정렬이 비스듬한 현을 따라 재서 폭이 `1/cos(Δθ)`만큼 부풀어 오른다. 리뷰어 실측:
+
+```
+x0=362: 각도 1.999도, 평균 69.381 nm (참값 70.0)
+x0=465: 각도 -18.471도, 평균 74.055 nm  <- +4.06 nm = +1.33 px, 스펙 게이트 밖
+        valid 98줄, 표준편차 0.20 nm — 정밀해 보인다
+```
+
+유일하게 뜨는 경고는 `short 발생 구간 있음`이라 원인을 잘못 짚는다. 사용자는 "이
+패턴 일부가 short났다"로 읽지 "ROI가 잘못 놓여 각도가 엉망이다"로 읽지 않는다.
+
+리뷰어가 약 1,700개 조합을 훑어 **경고 없이 1px 넘게 틀리는 경우는 0건**이었다.
+즉 조용히 틀리지는 않는다. 다만 경고가 엉뚱하고 고칠 수단이 없다.
+
+- [ ] **Step 1: 각도 타당성 경고**
+
+`measure_roi`가 이미 버리고 있는 진단값(`angle_deg, _ = estimate_angle_deg(...)`)을
+받아서 쓴다. 적합의 산포가 크거나 추정 각도가 ROI 대각선이 허용하는 범위를 벗어나면
+경고를 단다.
+
+```python
+    if abs(angle_deg) > ANGLE_SANITY_DEG:
+        warnings.append(
+            f"갭 축 각도가 {angle_deg:.1f}도로 추정됐습니다 — ROI가 갭을 "
+            f"제대로 가로지르는지 확인하고, 필요하면 각도를 직접 고정하세요")
+```
+
+`ANGLE_SANITY_DEG`는 스펙이 상정한 시야(기울기 0~10도)에 여유를 둔 값으로 정하고,
+그 근거를 주석에 적는다. 위 x0=465 사례(-18.5도)가 경고를 받고 정상 사례(2.0도)는
+안 받는 것을 테스트로 박는다.
+
+- [ ] **Step 2: 각도를 직접 고정하는 조작 (스펙 4.2)**
+
+`grep -rn "angle_deg=" ebl_gap_gui/` -> 0건. 엔진에 `measure_roi(..., angle_deg=...)`이
+있는데 아무도 안 부른다. 스펙은 "화면에 표시하고 사용자가 수동으로 고정할 수 있다"를
+요구한다. 표시는 되는데 고정이 안 된다.
+
+측정 도구 모음 옆에 각도 스핀박스와 "각도 고정" 체크박스를 둔다. 체크되면 그 값을
+`measure_roi`에 넘기고, 아니면 자동 추정한다. 측정 뒤에는 추정된 각도가 스핀박스에
+반영돼 사용자가 그 값을 보고 고정 여부를 정할 수 있다.
+
+**무장할 때 신호를 막는다 — `try/finally`로.** 이 프로젝트에서 같은 실수가 두 번
+났다.
+
+- [ ] **Step 3: `threshold_fraction`과 `along_average` 노출 (스펙 4.3/4.4)**
+
+`MeasureParams`의 docstring이 "GUI가 그대로 노출한다"고 적어 놓고 노출하지 않는다.
+둘 다 측정 설정 영역에 둔다. `threshold_fraction`을 바꾸면 프로파일 플롯의 문턱선이
+따라 움직이는 것이 Task 20에서 이미 보장돼 있으므로, 이 조작이 붙으면 그 보장이
+비로소 사용자에게 보인다.
+
+README에 두 값이 무엇을 바꾸는지 한 줄씩 적는다. 특히 문턱을 낮추면 **갭이 좁게**
+측정된다는 방향을 적는다(어두운 갭이므로). 컨트롤러 실측: f=0.3 -> 9.600 px,
+f=0.5 -> 10.000, f=0.7 -> 10.400.
+
+- [ ] **Step 4: 데이터바 거부를 엔진으로 (스펙 4.1)**
+
+지금 가드는 `app.py`에만 있고, 그것도 FEI 메타데이터가 `ResolutionY`를 준 경우에만
+동작한다(`databar_top is not None`). 두 경로로 새어 나간다: README가 안내하는 노트북
+사용(`measure_roi(loaded.pixels, Roi(...), scale)`)과 `databar_top`이 `None`인 이미지
+— PNG 크롭과 비 FEI TIFF, 즉 스케일바 대체 경로로 몰리는 바로 그 집단이다.
+
+리뷰어 실측: 데이터바를 걸친 ROI가 엔진에서 그대로 측정되고 `44.0% short`라는
+**날조된 이상 비율**을 낸다. 이 도구가 보고하려고 존재하는 바로 그 신호에 가짜가
+섞인다.
+
+`measure_roi`에 `databar_top: int | None = None`을 받아 ROI가 침범하면 거부한다.
+GUI는 지금처럼 값을 넘긴다. `databar_top`이 없을 때는 거부할 수 없으니, `load_image`가
+메타데이터 없이 읽은 이미지에 대해 아래쪽 밝은 띠를 발견하면 기록에 남긴다.
+
+- [ ] **Step 5: 이중 `extract_profiles`에 주석**
+
+고치지 않는다(Task 19 판정 유지). 다만 각도 추정 경로가
+`extract_profiles(image, roi, 0.0)`을 `along_average` 없이 부른다는 사실을 주석으로
+남긴다. Step 3이 `along_average`를 노출하면 그 값을 올려도 측정만 매끈해지고 각도
+추정은 안 매끈해진다. 나중에 누가 "중복 호출"을 보고 배열 하나를 공유하게 고치면
+각도 추정이 조용히 바뀐다.
+
+- [ ] **Step 6: 전체 테스트와 커밋**
+
