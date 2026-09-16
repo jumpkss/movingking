@@ -65,6 +65,92 @@ def test_setting_a_dose_updates_the_record_and_the_cell(qapp):
     assert panel.dose_text(0) == "275"
 
 
+def test_editing_the_dose_cell_updates_the_record_and_emits(qapp):
+    """실제 사용자가 타는 경로: 셀 텍스트를 직접 고친다.
+
+    set_dose()는 _loading으로 막힌 경로를 지나므로 _on_item_changed를 거치지
+    않는다. 그것만 테스트하면 편집 처리가 통째로 깨져도 통과한다.
+    """
+    records = make_records()
+    panel = FilePanel()
+    panel.set_records(records)
+    seen = []
+    panel.dose_edited.connect(lambda i, v: seen.append((i, v)))
+    panel._table.item(0, 1).setText("275")
+    assert records[0].dose == pytest.approx(275.0)
+    assert seen == [(0, 275.0)]
+
+
+def test_clearing_the_dose_cell_means_unknown(qapp):
+    records = make_records()
+    panel = FilePanel()
+    panel.set_records(records)
+    seen = []
+    panel.dose_edited.connect(lambda i, v: seen.append((i, v)))
+    panel._table.item(0, 1).setText("")
+    assert records[0].dose is None
+    assert seen == [(0, None)]
+
+
+def test_unparseable_dose_reverts_and_does_not_emit(qapp):
+    records = make_records()
+    panel = FilePanel()
+    panel.set_records(records)
+    seen = []
+    panel.dose_edited.connect(lambda i, v: seen.append((i, v)))
+    panel._table.item(0, 1).setText("abc")
+    assert records[0].dose == pytest.approx(300.0)
+    assert panel.dose_text(0) == "300"
+    assert seen == []
+
+
+def test_negative_dose_reverts(qapp):
+    """음수 dose는 물리적으로 불가능하다. 조용히 받으면 곡선 x축이 틀어진다."""
+    records = make_records()
+    panel = FilePanel()
+    panel.set_records(records)
+    seen = []
+    panel.dose_edited.connect(lambda i, v: seen.append((i, v)))
+    panel._table.item(0, 1).setText("-50")
+    assert records[0].dose == pytest.approx(300.0)
+    assert seen == []
+
+
+def test_reloading_onto_the_same_row_still_announces_the_selection(qapp):
+    """0행이 선택된 채 다른 폴더를 열면 Qt는 신호를 보내지 않는다.
+
+    그대로 두면 결과 패널이 이전 폴더의 결과를 계속 보여준다.
+    """
+    panel = FilePanel()
+    panel.set_records(make_records())
+    seen = []
+    panel.selection_changed.connect(seen.append)
+    panel.set_records(make_records())
+    assert seen == [0]
+
+
+def test_loading_flag_is_cleared_even_when_filling_a_row_raises(qapp):
+    """예외로 _loading이 True로 남으면 이후 dose 편집이 전부 조용히 무시된다.
+
+    이 상태는 눈에 보이지 않는다 — 사용자는 dose를 고쳤는데 아무 일도 일어나지
+    않는 것만 본다. 그래서 플래그 불변식을 직접 확인한다.
+
+    예외 뒤에 성공하는 set_records를 한 번 끼워 넣고 셀 편집으로 확인하려 하면
+    안 된다. 그 호출이 try/finally 없이도 자기 끝에서 플래그를 내려버려서,
+    버그가 있든 없든 통과하는 테스트가 된다.
+    """
+    records = make_records()
+    panel = FilePanel()
+    panel.set_records(records)
+
+    broken = ImageRecord(path=Path("x.tif"), scale=SCALE, dose=1.0)
+    broken.path = None  # _fill_row에서 .name 접근이 터진다
+    with pytest.raises(AttributeError):
+        panel.set_records([broken])
+
+    assert panel._loading is False
+
+
 def test_file_panel_marks_measured_and_unmeasured_rows(qapp):
     records = make_records()
     records[1].roi_results = []

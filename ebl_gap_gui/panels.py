@@ -62,13 +62,24 @@ class FilePanel(QWidget):
 
     def set_records(self, records) -> None:
         self._loading = True
-        self._records = list(records)
-        self._table.setRowCount(len(self._records))
-        for index in range(len(self._records)):
-            self._fill_row(index)
-        self._loading = False
+        try:
+            self._records = list(records)
+            self._table.setRowCount(len(self._records))
+            for index in range(len(self._records)):
+                self._fill_row(index)
+            if self._records:
+                self._table.setCurrentCell(0, 0)
+        finally:
+            # 예외가 나도 플래그를 반드시 내린다. True로 남으면 이후 사용자의 dose
+            # 편집이 전부 조용히 무시되는데, 그것이 잘못 파싱된 dose를 바로잡는
+            # 유일한 경로다. 실패가 눈에 보이지도 않는다.
+            self._loading = False
         if self._records:
-            self._table.setCurrentCell(0, 0)
+            # Qt의 currentCellChanged는 인덱스가 실제로 바뀔 때만 발신한다. 0행이
+            # 선택된 채로 다른 폴더를 열면 setCurrentCell(0, 0)이 no-op이라 신호가
+            # 나가지 않고, 결과 패널이 이전 폴더의 결과를 계속 보여준다. 위에서
+            # _loading으로 암묵 발신을 막았으므로 여기서 정확히 한 번 발신된다.
+            self.selection_changed.emit(0)
 
     def _fill_row(self, index: int) -> None:
         record = self._records[index]
@@ -94,8 +105,10 @@ class FilePanel(QWidget):
 
     def refresh_row(self, index: int) -> None:
         self._loading = True
-        self._fill_row(index)
-        self._loading = False
+        try:
+            self._fill_row(index)
+        finally:
+            self._loading = False
 
     def _on_current_cell_changed(self, row: int, _col, _prow, _pcol) -> None:
         if not self._loading and 0 <= row < len(self._records):
@@ -109,6 +122,11 @@ class FilePanel(QWidget):
         try:
             dose = float(text) if text else None
         except ValueError:
+            self.refresh_row(row)
+            return
+        if dose is not None and dose < 0:
+            # 음수 dose는 물리적으로 불가능하다. 파싱 불가와 같이 되돌린다 —
+            # 조용히 받아들이면 dose-gap 곡선의 x축이 틀어진 채로 해석된다.
             self.refresh_row(row)
             return
         self._records[row].dose = dose
