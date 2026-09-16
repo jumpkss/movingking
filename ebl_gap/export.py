@@ -115,10 +115,18 @@ def render_overlay(image, roi: Roi, result: RoiResult) -> np.ndarray:
     """원본 이미지 위에 ROI와 검출된 에지를 그린 RGB 배열을 만든다."""
     canvas = _to_rgb(image)
 
-    canvas[roi.y0, roi.x0 : roi.x1 + 1] = ROI_COLOR
-    canvas[roi.y1, roi.x0 : roi.x1 + 1] = ROI_COLOR
-    canvas[roi.y0 : roi.y1 + 1, roi.x0] = ROI_COLOR
-    canvas[roi.y0 : roi.y1 + 1, roi.x1] = ROI_COLOR
+    # 테두리 좌표를 이미지 안으로 자른다. extract_profiles는 경계를 살짝 벗어난
+    # ROI를 mode="nearest"로 허용하므로 같은 ROI로 measure_roi가 성공한다.
+    # 여기서 자르지 않으면 측정은 되는데 오버레이만 IndexError로 죽어서,
+    # CSV에는 값이 남고 그림만 안 나오는 상태가 된다.
+    y0 = max(0, min(roi.y0, canvas.shape[0] - 1))
+    y1 = max(0, min(roi.y1, canvas.shape[0] - 1))
+    x0 = max(0, min(roi.x0, canvas.shape[1] - 1))
+    x1 = max(0, min(roi.x1, canvas.shape[1] - 1))
+    canvas[y0, x0 : x1 + 1] = ROI_COLOR
+    canvas[y1, x0 : x1 + 1] = ROI_COLOR
+    canvas[y0 : y1 + 1, x0] = ROI_COLOR
+    canvas[y0 : y1 + 1, x1] = ROI_COLOR
 
     for line in result.lines:
         if line.status in STATUS_COLORS:
