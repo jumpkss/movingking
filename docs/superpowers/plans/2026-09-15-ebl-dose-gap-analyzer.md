@@ -5270,7 +5270,7 @@ Expected: 모두 통과
 
 Run:
 ```bash
-grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK: 엔진은 Qt에 의존하지 않음"
+grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK: 엔진은 Qt에 의존하지 않음"
 ```
 Expected: `OK: 엔진은 Qt에 의존하지 않음`
 
@@ -5847,7 +5847,7 @@ Expected: 모두 통과
 
 Run:
 ```bash
-grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK: 엔진은 Qt에 의존하지 않음"
+grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK: 엔진은 Qt에 의존하지 않음"
 ```
 Expected: `OK: 엔진은 Qt에 의존하지 않음`
 
@@ -6110,7 +6110,7 @@ def test_representative_line_is_the_median_width_valid_line(qapp, folder):
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과 (277 + 새 테스트 4개 = 281)
 
-Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 Expected: `OK`
 
 - [x] **Step 10: 커밋**
@@ -6325,7 +6325,7 @@ def representative_line(lines: Sequence[LineResult]) -> LineResult | None:
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과 (281 + 새 테스트 4개 = 285)
 
-Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 Expected: `OK`
 
 - [x] **Step 8: 커밋**
@@ -6603,7 +6603,7 @@ def test_profile_plot_has_usable_height_at_the_default_geometry(qapp):
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과
 
-Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 Expected: `OK`
 
 - [x] **Step 8: README에 라인 선택을 적는다**
@@ -6860,7 +6860,7 @@ README의 라인 선택 설명에 붙인다.
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과 (293 + 새 테스트 6개 = 299 내외)
 
-Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 Expected: `OK`
 
 - [ ] **Step 10: 커밋**
@@ -7285,7 +7285,7 @@ dose test의 답이므로, 그 점이 빠진 곡선은 답의 절반을 지운 �
 - [x] **Step 9: 전체 테스트와 커밋**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
-Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 
 ```bash
 git commit -m "Stop the overlay export from drawing a measurement that moved"
@@ -7523,7 +7523,7 @@ Task 23이 연산자(`>=`)는 통일했는데 분모는 통일하지 않았다. 
 - [ ] **Step 10: 전체 테스트와 커밋**
 
 Run: `QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`
-Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 
 ```bash
 git commit -m "Say that a fully shorted ROI might simply be off the pattern"
@@ -7682,7 +7682,7 @@ CSV row: mean_nm=60.000, nm_per_px=3.0518, scale_source=fei_metadata, warnings='
 - [ ] **Step 6: 전체 테스트와 커밋**
 
 Run: `QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`
-Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 
 ```bash
 git commit -m "Stop stamping a calibrated image as an error"
