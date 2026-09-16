@@ -1,0 +1,28 @@
+[project]
+name = "ebl-gap"
+version = "0.1.0"
+description = "EBL dose test SEM 이미지 S/D 갭 측정 툴"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "tifffile>=2023.7.10",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.5", "pyqtgraph>=0.13"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+ebl-gap = "ebl_gap_gui.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ebl_gap*", "ebl_gap_gui*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
