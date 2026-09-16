@@ -7587,3 +7587,104 @@ git commit -m "Say that a fully shorted ROI might simply be off the pattern"
 
 - [ ] **Step 6: 전체 테스트와 커밋**
 
+
+---
+
+### Task 27: 캘리브레이션을 끝낸 이미지에서 `오류:`를 떼고, HFW 경고를 CSV에 싣는다
+
+브랜치 마지막 정리다. 리뷰어의 close-out 판정은 "한 줄 남았다"였다.
+
+**1) 캘리브레이션 뒤에도 `오류:`가 남는다.**
+
+`record_notices`가 채택한 규칙은 `error ⟺ scale is None`인데, `calibrate_current`가
+`record.scale`을 채우면서 `record.error`를 지우지 않는다. 컨트롤러 실측 — README가
+안내하는 PNG 크롭 경로 그대로:
+
+```
+측정값: 60.013 nm (참값 60.0)
+리포트 줄: 오류: 스케일 메타데이터가 없습니다 — 스케일 캘리브레이션으로 직접 지정하세요 …
+```
+
+**오류 메시지가 하라고 시킨 행동을 그대로 했는데 오류가 남는다.** 스펙 6절도
+그 열화 상태의 범위를 "캘리브레이션을 끝내기 전까지는"으로 적고 있다.
+`ebl_gap_gui/panels.py`는 이미 `record.error and record.scale is None`으로 올바르게
+가드한다 — 통합하려고 만든 헬퍼가 통합 대상보다 덜 조심스럽다.
+
+- [ ] **Step 1: `record_notices`를 panels와 같은 가드로 (RED 먼저)**
+
+```python
+def test_a_calibrated_image_is_no_longer_reported_as_an_error(tmp_path):
+    """오류 메시지가 시킨 행동을 한 뒤에는 오류가 남으면 안 된다.
+
+    스케일이 없다는 것은 캘리브레이션 전까지만 참이다. 측정이 끝난 이미지 옆에
+    `오류:`가 남으면 실험 노트가 그 숫자를 의심하게 만든다.
+    """
+    record = ImageRecord(path=Path("crop_300uC.png"), scale=None,
+                         error="스케일 메타데이터가 없습니다 — …")
+    assert any(n.startswith("오류:") for n in record_notices(record))
+
+    record.scale = ScaleInfo(3.0, "manual")
+    assert not any(n.startswith("오류:") for n in record_notices(record))
+```
+
+GUI 전 경로(폴더 열기 -> 캘리브레이션 -> 측정 -> 리포트)로도 한 번 검사한다.
+
+`record.error`를 `calibrate_current`에서 지우는 방법도 있지만 **가드 쪽을 고른다.**
+`error`는 "왜 이 상태인가"의 기록이고 지워 버리면 나중에 왜 수동 스케일인지 알 수
+없다. 표시 시점에 판단하는 편이 정보를 잃지 않는다.
+
+**2) HFW 불일치가 요약 CSV에 안 실린다.**
+
+`write_summary_csv`의 측정된 행이 `result.warnings`만 쓰고 `record.notes`를 버린다.
+HFW 불일치는 **픽셀 크기가 틀렸을 수 있다**는 뜻이라 보고되는 모든 nm를 조용히
+편향시키는 유일한 조건이다. 리뷰어 실측:
+
+```
+notes: ['PixelWidth x 가로폭(3125.0 nm)이 HFW(9000.0 nm)와 어긋난다 …']
+CSV row: mean_nm=60.000, nm_per_px=3.0518, scale_source=fei_metadata, warnings=''
+```
+
+가장 흔한 작업 순서(열기 -> 장마다 측정 -> 요약 CSV 내보내기)에서, 픽셀 크기가 3배
+틀렸을 수 있는 이미지가 **가장 신뢰할 만한 행**으로 기록된다: 출처가
+`fei_metadata`이고 경고 칸이 비어 있다.
+
+- [ ] **Step 2: 측정된 행에도 `record.notes`를 싣는다**
+
+`참고:` 접두사를 붙여 `warnings` 칸에 합친다. 경계값 테스트: HFW 불일치가 있는
+이미지를 측정한 뒤 CSV의 `warnings` 칸에 그 문구가 있는지.
+
+**3) 0번 이미지의 안내가 "N장 불러옴"에 덮인다.**
+
+`open_folder`가 `set_records`의 `selection_changed(0)`이 띄운 안내를 그 뒤의
+`"{n}장 불러옴"`으로 덮어쓴다. 그래서 폴더의 첫 장에 붙은 안내만 화면에서 사라진다.
+
+- [ ] **Step 3: 첫 장의 안내를 살린다**
+
+`"{n}장 불러옴"`을 덮어쓰지 말고 안내가 있으면 이어 붙인다. 0번에 안내가 있는
+폴더로 검사한다.
+
+**4) 남은 변이 둘 (테스트/주석만).**
+
+- [ ] **Step 4: `_release_angle_lock`의 `blockSignals` 주석을 사실에 맞춘다**
+
+`blockSignals(True)`를 `False`로 바꿔도 통과한다. 주석은 "안 막으면
+`_angle_controls_changed`가 상태 표시줄을 덮는다"고 하는데, 이 호출은
+`select_image` 맨 앞이고 `_set_status`는 그 뒤라 덮임이 관측되지 않는다. 코드는
+방어로 남기되 **주석에서 틀린 이유를 지운다** — 틀린 근거를 단 방어 코드는 다음
+사람을 속인다(Task 25에서 같은 이유로 한 번 고쳤다). `_arm_angle_deg_spin` 쪽 가드는
+실제로 부하를 지므로 그 차이를 적는다.
+
+- [ ] **Step 5: 도구 모음 줄 순서를 고정한다**
+
+설정 도구 모음을 먼저 얹는 변이가 통과한다(주 도구 모음이 아랫줄로 내려간다).
+`주요 동작`이 윗줄(`y`가 더 작다)인지 검사한다.
+
+- [ ] **Step 6: 전체 테스트와 커밋**
+
+Run: `QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`
+Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+
+```bash
+git commit -m "Stop stamping a calibrated image as an error"
+```
+
