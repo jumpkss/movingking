@@ -5891,3 +5891,511 @@ git push -u origin claude/intelligent-cray-f9eq7a
 4. 실제 이미지에서 측정한 갭 값이 눈으로 본 것과 어긋나면, 스펙 5장의 임계값
    (`contrast_k=5.0`, `mad_k=3.5`, `min_width_px=3.0`)을 실제 데이터에 맞춰 조정하고
    그 근거를 스펙에 적는다.
+
+
+---
+
+### Task 20: 문턱을 엔진에서 가져오고, ROI가 움직이면 진단 플롯을 지운다
+
+Task 19 리뷰가 실행으로 찾아낸 것 중 계산과 상태에 관한 것들이다. UI 배치 문제는
+Task 21로 뺀다.
+
+**1) 위젯이 문턱을 다시 계산한다.**
+
+`ebl_gap_gui/profile_plot.py`가 `analysis.i_lo + 0.5 * (i_hi_left - i_lo)`로 문턱을
+직접 구한다. 0.5가 박혀 있어서 `MeasureParams.threshold_fraction`을 바꾸면 엔진은
+0.3으로 에지를 잡는데 플롯은 50% 선을 그린다. 리뷰어가 수치로 확인했다: f=0.3이면
+엔진 에지가 90.735 / 109.3인데 플롯은 116.0에 선을 긋는다. 스펙 3절은 계산을
+위젯에 두지 말라고 하고, 이 플롯의 존재 이유가 "문턱이 어디 섰는지 보여주는 것"이다.
+지금은 GUI가 `MeasureParams`를 바꾸지 않아 드러나지 않지만, 드러나는 순간 진단
+도구가 조용히 거짓말을 한다.
+
+- [ ] **Step 1: 문턱이 엔진에서 나오는지 검사하는 테스트 (RED)**
+
+`tests/test_edges.py`에 추가한다.
+
+```python
+def test_analysis_exposes_the_thresholds_it_actually_used():
+    """문턱은 분석 결과에 실려 나온다. 소비자가 다시 계산하면 갈라진다."""
+    profile = np.array([200.0] * 20 + [40.0] * 10 + [160.0] * 20)
+
+    a50 = analyze_profile(profile, threshold_fraction=0.5)
+    assert a50.threshold_left == pytest.approx(120.0)
+    assert a50.threshold_right == pytest.approx(100.0)
+
+    a30 = analyze_profile(profile, threshold_fraction=0.3)
+    assert a30.threshold_left == pytest.approx(88.0)
+    assert a30.threshold_right == pytest.approx(76.0)
+    # 문턱이 낮아지면 갭이 넓게 잡힌다 — 이 관계가 깨지면 문턱이 안 먹은 것이다.
+    assert a30.width_px > a50.width_px
+```
+
+Run: `python -m pytest tests/test_edges.py -q -k thresholds_it_actually_used`
+Expected: `AttributeError: 'ProfileAnalysis' object has no attribute 'threshold_left'`
+
+- [ ] **Step 2: ProfileAnalysis에 threshold_fraction 필드와 두 프로퍼티 (GREEN)**
+
+`ebl_gap/edges.py`. 필드 하나만 늘리고 좌우 문턱은 프로퍼티로 파생시킨다. 값 두
+개를 따로 저장하면 `i_lo`와 어긋날 수 있다.
+
+```python
+@dataclass(frozen=True)
+class ProfileAnalysis:
+    ...
+    n_cross_right: int
+    threshold_fraction: float
+
+    @property
+    def threshold_left(self) -> float:
+        """왼쪽 에지를 잡은 실제 밝기 문턱. _locate와 같은 식이어야 한다."""
+        return self.i_lo + self.threshold_fraction * (self.i_hi_left - self.i_lo)
+
+    @property
+    def threshold_right(self) -> float:
+        return self.i_lo + self.threshold_fraction * (self.i_hi_right - self.i_lo)
+```
+
+`analyze_profile`의 **두 `ProfileAnalysis(...)` 구성 지점 모두**에
+`threshold_fraction=threshold_fraction`을 넘긴다 — 대비 0 조기 반환 쪽을 빠뜨리면
+그 경로에서만 터진다.
+
+Run: `python -m pytest tests/test_edges.py -q`
+Expected: 모두 통과
+
+- [ ] **Step 3: 위젯이 엔진 값을 그리게 한다**
+
+`ebl_gap_gui/profile_plot.py`의 문턱 루프를 바꾼다.
+
+```python
+        # 좌우 문턱을 따로 그린다. 조명이 기울면 두 선의 높이가 달라진다.
+        # 값은 엔진이 실제로 쓴 것을 그대로 받는다. 여기서 다시 계산하면
+        # threshold_fraction이 바뀌는 순간 플롯이 거짓말을 한다.
+        for level, color in ((analysis.threshold_left, "#888888"),
+                             (analysis.threshold_right, "#bbbbbb")):
+```
+
+- [ ] **Step 4: 위젯이 threshold_fraction을 따라가는지 검사 (RED -> GREEN)**
+
+`tests/test_gui_profile_plot.py`에 추가한다. Step 3을 되돌리면 실패해야 한다.
+
+```python
+def test_threshold_lines_follow_the_engine_fraction(qapp):
+    """문턱선은 엔진이 쓴 값을 따라간다. 위젯이 0.5를 박아두면 여기서 갈라진다."""
+    profile = np.array([200.0] * 20 + [40.0] * 10 + [160.0] * 20)
+    analysis = analyze_profile(profile, threshold_fraction=0.3)
+    plot = ProfilePlot()
+
+    plot.show_line(profile, valid_line(analysis), analysis)
+
+    levels = sorted(item.value() for item in plot.threshold_lines())
+    assert levels == pytest.approx([76.0, 88.0])
+```
+
+`ProfilePlot`에 접근자를 더한다. 실제로 그려진 항목에서 파생시켜야 접근자와 그림이
+갈라지지 않는다.
+
+```python
+    def threshold_lines(self) -> list[pg.InfiniteLine]:
+        """그려진 가로 문턱선들. 테스트가 그림 자체를 검사하기 위한 것이다."""
+        return [item for item in self._plot.items()
+                if isinstance(item, pg.InfiniteLine) and item.angle == 0]
+```
+
+RED 확인: Step 3을 잠시 되돌려 `threshold_fraction=0.3`인데도 `[96.0, 116.0]`이
+나오는 것을 보고 다시 적용한다. 그 출력을 보고서에 붙인다.
+
+**2) ROI를 옮겨도 진단 플롯이 남는다.**
+
+`app.py:69`가 `roi_changed`를 `clear_overlay`에만 연결한다. 리뷰어가 실제
+마우스 드래그로 확인: 오버레이는 사라지는데 미니 플롯은 이전 ROI의 97행 프로파일을
+계속 띄우고 있고, x축은 이전 ROI의 정렬 좌표계다. 오버레이를 지우기로 한 이유가
+"위치에 묶인 그림을 다른 위치에 남기지 않는다"였는데, 이 플롯도 똑같이 위치에
+묶여 있다.
+
+- [ ] **Step 5: 실제 드래그로 검사하는 테스트 (RED)**
+
+`tests/test_gui_app.py`에 추가한다. **헬퍼로 ROI를 세팅하지 말고** `image_view`의
+ROI 객체를 실제로 움직여 신호가 나게 한다 — 이 프로젝트에서 신호가 죽어 있는데
+테스트만 통과한 사고가 다섯 번 있었다.
+
+```python
+def test_moving_the_roi_clears_the_profile_plot(qapp, folder):
+    """ROI를 옮기면 이전 위치의 프로파일이 남으면 안 된다.
+
+    미니 플롯은 오버레이와 마찬가지로 위치에 묶여 있다. 사용자가 ROI를 옮겨
+    놓고 플롯을 보면 다른 자리의 프로파일을 현재 자리의 것으로 읽는다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    assert window.profile_plot.has_curve()
+
+    window.image_view._roi.setPos([120, 130])
+
+    assert window.profile_plot.has_curve() is False
+    assert window._profiles is None
+```
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -q -k clears_the_profile_plot`
+Expected: 실패. `assert True is False`
+
+- [ ] **Step 6: 배선을 더한다 (GREEN)**
+
+`ebl_gap_gui/app.py`의 `__init__`, 기존 `roi_changed` 연결 옆에 붙인다.
+
+```python
+        self.image_view.roi_changed.connect(self.image_view.clear_overlay)
+        # 미니 플롯도 ROI에 묶여 있다. x축이 그 ROI의 정렬 좌표계이므로
+        # ROI가 움직이면 축 자체가 다른 뜻이 된다.
+        self.image_view.roi_changed.connect(self._clear_profile)
+```
+
+```python
+    def _clear_profile(self) -> None:
+        self._profiles = None
+        self.profile_plot.clear()
+```
+
+`select_image`가 이미 `profile_plot.clear()`를 부르고 있다면 그것도 `_clear_profile`로
+바꿔 `_profiles`가 같이 비워지게 한다 — 이미지가 바뀌었는데 이전 이미지의 프로파일
+배열이 남아 있으면 `show_line`이 엉뚱한 이미지의 프로파일을 그린다.
+
+**3) 대표 라인 규칙이 고정돼 있지 않다.**
+
+리뷰어가 `_show_representative_line`의 중앙값 블록을 통째로 `result.lines[0].row`로
+바꿔도 277개가 전부 통과하는 것을 확인했다. 지금 동작은 맞지만 아무도 지키지 않는다.
+
+- [ ] **Step 7: 대표 라인 규칙을 고정하는 테스트**
+
+```python
+def test_representative_line_is_the_median_width_valid_line(qapp, folder):
+    """대표 라인은 폭이 중앙값에 가장 가까운 valid 라인이다.
+
+    첫 줄로 바꿔도 통과하던 자리다. 평균이 어떤 프로파일에서 나왔는지
+    보여주는 것이 이 플롯의 목적이므로 규칙 자체를 고정한다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+
+    result = window.session.records[0].roi_results[0]
+    valid = [ln for ln in result.lines
+             if ln.status == "valid" and ln.width_nm is not None]
+    widths = sorted(ln.width_nm for ln in valid)
+    expected = min(valid,
+                   key=lambda ln: abs(ln.width_nm - widths[len(widths) // 2])).row
+
+    assert window.profile_plot.row() == expected
+    assert expected != result.lines[0].row  # 첫 줄로 퇴화하면 무의미한 검사다
+```
+
+`ProfilePlot.row()`가 없으면 표시된 행을 돌려주는 접근자를 더한다. 제목 문자열에서
+파싱하지 말고 `show_line`이 받은 `line.row`를 저장해 돌려준다.
+
+마지막 단언이 중요하다. 만약 그 데이터에서 대표 라인이 우연히 0행이면 테스트가
+판별력을 잃으므로, 그때는 `folder` 픽스처의 합성 이미지에 기울기(`angle_deg`)나
+노이즈를 주어 폭이 행마다 달라지게 만든다.
+
+- [ ] **Step 8: median 지역변수 이름**
+
+`app.py`의 `_show_representative_line` 안 `median`은 nm 값이므로 전역 명명 규칙에
+따라 `median_nm`으로 바꾼다. 한 식 안에서 끝나는 길이 지역변수가 아니라 여러 줄에
+걸쳐 쓰이는 값이다.
+
+- [ ] **Step 9: 전체 테스트와 엔진 순수성**
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
+Expected: 모두 통과 (277 + 새 테스트 4개 = 281)
+
+Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Expected: `OK`
+
+- [ ] **Step 10: 커밋**
+
+```bash
+git add ebl_gap/edges.py ebl_gap_gui/profile_plot.py ebl_gap_gui/app.py tests/
+git commit -m "Take thresholds from the engine and drop the profile plot with its ROI"
+```
+
+---
+
+### Task 21: 라인 선택 조작, 파일 목록 레이아웃 복구
+
+스펙 7절은 오른쪽 패널에 "**선택한 라인**의 프로파일 미니 플롯"을 요구한다. Task 19는
+플롯은 만들었지만 라인을 고르는 조작을 만들지 않았다 — `show_line`에 닿는 것은
+테스트뿐이고 `ebl_gap_gui/` 안의 어떤 `.connect(`도 거기 닿지 않는다(리뷰어 grep 확인).
+사용자가 원래 요구한 "갭이 형성되지 않은 케이스를 특이사항으로 분리"는 그 이상 라인을
+**열어 볼 수 있어야** 쓸모가 있다. 89.98 nm라는 숫자 옆에서 40행이 왜 `no_edge`인지
+확인할 방법이 지금은 없다.
+
+이미지 위 클릭을 라인으로 역변환하는 방식은 쓰지 않는다. ROI 정렬 좌표의 역변환이
+필요해 새 기하 코드가 들어가고, 그 코드는 측정 정확도와 같은 등급의 검증을 요구한다.
+대신 **행 번호 스핀박스 + 이상 라인 앞뒤 이동 버튼**을 쓴다. 이상 라인 이동이 실제로
+하고 싶은 동작이기도 하다.
+
+- [ ] **Step 1: 라인 선택 조작 테스트 (RED)**
+
+`tests/test_gui_app.py`에 추가한다. 전부 **실제 위젯을 조작한다** — 헬퍼 호출로
+값을 넣으면 이 프로젝트에서 다섯 번 반복된 사고를 여섯 번째로 반복하는 것이다.
+
+```python
+def test_line_spinbox_shows_that_line(qapp, folder):
+    """스핀박스에 직접 타이핑한 행이 플롯에 뜬다."""
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+
+    window.line_selector.setValue(12)      # 실제 위젯 값 변경 -> 신호
+
+    assert window.profile_plot.row() == 12
+
+
+def test_line_spinbox_is_disabled_until_measured(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    assert window.line_selector.isEnabled() is False
+    window.measure_current()
+    assert window.line_selector.isEnabled() is True
+    assert window.line_selector.maximum() == len(
+        window.session.records[0].roi_results[0].lines) - 1
+
+
+def test_next_anomaly_button_jumps_to_a_non_valid_line(qapp, folder_with_short):
+    """'다음 이상' 버튼이 valid가 아닌 다음 라인으로 간다.
+
+    이 버튼이 특이사항 분리를 실제로 쓸 수 있게 만드는 부분이다.
+    """
+    window = MainWindow()
+    window.open_folder(folder_with_short)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    anomalies = [ln.row for ln in result.lines if ln.status != "valid"]
+    assert anomalies, "픽스처가 이상 라인을 만들어야 이 테스트가 뜻이 있다"
+
+    window.line_selector.setValue(0)
+    window.next_anomaly_button.click()     # 실제 클릭
+
+    assert window.profile_plot.row() in anomalies
+    assert window.profile_plot.row() == min(r for r in anomalies if r > 0)
+
+
+def test_anomaly_button_is_disabled_when_every_line_is_valid(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    if all(ln.status == "valid" for ln in result.lines):
+        assert window.next_anomaly_button.isEnabled() is False
+```
+
+`folder_with_short` 픽스처는 갭이 닫힌 합성 이미지(`synth_gap_image(gap_nm=0.0)` 또는
+평탄 이미지)를 한 장 쓰면 된다. 기존 `folder` 픽스처 옆에 둔다.
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -q -k "line_spinbox or anomaly"`
+Expected: `AttributeError: 'MainWindow' object has no attribute 'line_selector'`
+
+- [ ] **Step 2: 조작을 만든다 (GREEN)**
+
+`ebl_gap_gui/app.py`. 미니 플롯 위젯과 같은 세로 칸에 얇은 조작 줄을 둔다.
+
+```python
+        self.line_selector = QSpinBox()
+        self.line_selector.setPrefix("라인 ")
+        self.line_selector.setEnabled(False)
+        self.prev_anomaly_button = QPushButton("◀ 이상")
+        self.next_anomaly_button = QPushButton("이상 ▶")
+        for button in (self.prev_anomaly_button, self.next_anomaly_button):
+            button.setEnabled(False)
+
+        self.line_selector.valueChanged.connect(self.show_line)
+        self.prev_anomaly_button.clicked.connect(
+            lambda: self._jump_to_anomaly(-1))
+        self.next_anomaly_button.clicked.connect(
+            lambda: self._jump_to_anomaly(+1))
+```
+
+측정이 끝나면 범위를 채운다. **신호를 막고 채운 뒤 대표 행으로 값을 세운다** —
+채우는 도중의 `valueChanged`가 `show_line`을 헛돌게 한다. 이 프로젝트의 `_loading`
+패턴과 같은 문제이고, `try/finally`로 반드시 되돌린다.
+
+```python
+    def _arm_line_selector(self, result, representative_row: int) -> None:
+        anomalies = [ln.row for ln in result.lines if ln.status != "valid"]
+        self.line_selector.blockSignals(True)
+        try:
+            self.line_selector.setRange(0, max(0, len(result.lines) - 1))
+            self.line_selector.setValue(representative_row)
+        finally:
+            self.line_selector.blockSignals(False)
+        self.line_selector.setEnabled(bool(result.lines))
+        for button in (self.prev_anomaly_button, self.next_anomaly_button):
+            button.setEnabled(bool(anomalies))
+```
+
+```python
+    def _jump_to_anomaly(self, step: int) -> None:
+        """현재 행에서 step 방향으로 가장 가까운 valid 아닌 행으로 간다."""
+        record = self.session.records[self._current]
+        if self._current is None or not record.roi_results:
+            return
+        rows = [ln.row for ln in record.roi_results[0].lines
+                if ln.status != "valid"]
+        if not rows:
+            return
+        current = self.line_selector.value()
+        candidates = [r for r in rows if (r > current if step > 0 else r < current)]
+        # 끝에 닿으면 반대쪽 끝으로 감는다. 이상 라인이 한 개뿐일 때도 닿을 수 있다.
+        target = (min(candidates) if step > 0 else max(candidates)) \
+            if candidates else (min(rows) if step > 0 else max(rows))
+        self.line_selector.setValue(target)
+```
+
+`_clear_profile`(Task 20)에서 조작도 같이 끈다 — 플롯이 비었는데 스핀박스만 살아
+있으면 눌렀을 때 아무 일도 안 일어나는 죽은 버튼이 된다.
+
+```python
+    def _clear_profile(self) -> None:
+        self._profiles = None
+        self.profile_plot.clear()
+        self.line_selector.setEnabled(False)
+        for button in (self.prev_anomaly_button, self.next_anomaly_button):
+            button.setEnabled(False)
+```
+
+`_show_representative_line`은 고른 행을 `_arm_line_selector`에 넘기고 `show_line`은
+그대로 둔다. 스핀박스 값 설정이 곧 `show_line` 호출이 되도록 배선하되, 무장 시점에는
+신호를 막았으므로 대표 라인은 명시적으로 한 번 그린다.
+
+- [ ] **Step 3: 파일 목록 레이아웃 복구**
+
+Task 19의 썸네일이 파일 이름을 밀어냈다. 실측:
+
+```
+file panel width: 287 | col0 width: 85 | iconSize: 56 | 이름에 남는 폭: 29
+이름 텍스트 폭: 105 | rowHeight: 30 | sizeHintForRow: 59
+```
+
+이름이 통째로 생략돼 `[썸네일] …`만 보인다. dose가 파싱되지 않는 파일(스펙 6절이
+정상 경우로 규정한다)에서는 행을 구분할 방법이 사라진다. 그리고 57픽셀 아이콘이
+30픽셀 행에 눌려 들어간다.
+
+`ebl_gap_gui/panels.py`:
+
+```python
+THUMBNAIL_SIZE = 40        # 56 -> 40. 좁은 패널에서 이름을 지우지 않는 크기
+```
+
+`FilePanel.__init__`에서 행 높이를 아이콘에 맞추고 첫 칸에 최소 폭을 준다.
+
+```python
+        self._table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents)
+        # 썸네일이 이름을 밀어내지 않도록 첫 칸에 바닥을 깐다. 이름이 사라지면
+        # dose가 안 잡히는 파일에서는 행을 구분할 방법이 없어진다.
+        self._table.horizontalHeader().setMinimumSectionSize(
+            THUMBNAIL_SIZE + 90)
+```
+
+`ebl_gap_gui/app.py`에서 파일 패널 초기 폭을 넓힌다.
+
+```python
+        splitter.setSizes([360, 700, 300])   # 260 -> 360
+```
+
+- [ ] **Step 4: 레이아웃을 실측으로 고정하는 테스트**
+
+`tests/test_gui_panels.py`. 픽셀 값을 박아두지 말고 **관계**를 검사한다.
+
+```python
+def test_the_file_name_still_fits_next_to_the_thumbnail(qapp, records):
+    """썸네일이 파일 이름을 밀어내지 않는다."""
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    window.open_folder(folder)
+
+    table = window.file_panel._table
+    name = table.item(0, 0).text()
+    needed = table.fontMetrics().horizontalAdvance(name)
+    available = table.columnWidth(0) - table.iconSize().width()
+
+    assert available >= needed, (
+        f"이름 '{name}'에 {needed}px 필요한데 {available}px 남는다")
+
+
+def test_rows_are_tall_enough_for_the_thumbnail(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    table = window.file_panel._table
+    assert table.rowHeight(0) >= table.iconSize().height()
+```
+
+- [ ] **Step 5: 썸네일이 실제 표에 붙는지 검사한다**
+
+리뷰어가 `_fill_row`의 `setIcon` 세 줄을 지워도 277개가 전부 통과하는 것을 확인했다.
+`has_thumbnail()`이 딕셔너리만 보기 때문이다. 기능이 완전히 죽어도 초록이다.
+
+`tests/test_gui_panels.py`의 썸네일 테스트들이 실제 표 항목의 아이콘을 보게 고친다.
+
+```python
+def test_thumbnail_reaches_the_table_item(qapp, records):
+    panel = FilePanel()
+    panel.set_records(records)
+    panel.set_thumbnail(0, synth_gap_image(gap_nm=50.0))
+
+    icon = panel._table.item(0, 0).icon()
+    assert icon.isNull() is False
+    assert icon.availableSizes()          # 실제 픽스맵이 들어 있다
+```
+
+RED 확인: `_fill_row`의 `setIcon` 블록을 잠시 지워 이 테스트가 실패하는 것을 보고
+되돌린다. 그 출력을 보고서에 붙인다. 되돌리는 것을 잊으면 기능이 사라진다.
+
+- [ ] **Step 6: 미니 플롯 기본 높이**
+
+`app.py:74-77`의 `right.setSizes([500, 260])`은 실제로는 플롯에 80픽셀만 준다.
+바닥 도크가 중앙 영역을 295픽셀로 줄이기 때문이다. `ProfilePlot`에
+`setMinimumHeight(180)`을 주고, 바닥 도크의 초기 높이를 줄인다.
+
+```python
+        dock.setMaximumHeight(260)   # 초기 배치에서만 — 사용자가 늘릴 수 있다
+```
+
+실측으로 확인한다.
+
+```python
+def test_profile_plot_has_usable_height_at_the_default_geometry(qapp):
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    qapp.processEvents()
+    assert window.profile_plot.height() >= 180
+```
+
+- [ ] **Step 7: 전체 테스트**
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
+Expected: 모두 통과
+
+Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+Expected: `OK`
+
+- [ ] **Step 8: README에 라인 선택을 적는다**
+
+사용 순서 4번 뒤에 한 줄 더한다.
+
+```
+5. 값이 이상하면 오른쪽 아래 **라인 스핀박스**로 행을 골라 프로파일을 확인한다.
+   **이상 ▶** 버튼은 valid가 아닌 다음 라인으로 건너뛴다 — `short`나 `no_edge`가
+   왜 그렇게 판정됐는지 문턱 위치로 직접 확인할 수 있다.
+```
+
+뒤 번호를 하나씩 민다.
+
+- [ ] **Step 9: 커밋**
+
+```bash
+git add ebl_gap_gui/ tests/ README.md
+git commit -m "Let the user pick a scanline and restore the file list layout"
+```
+
