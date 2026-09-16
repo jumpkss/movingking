@@ -6351,7 +6351,7 @@ git commit -m "Assert the cleared screen, not the cleared flag"
 대신 **행 번호 스핀박스 + 이상 라인 앞뒤 이동 버튼**을 쓴다. 이상 라인 이동이 실제로
 하고 싶은 동작이기도 하다.
 
-- [ ] **Step 1: 라인 선택 조작 테스트 (RED)**
+- [x] **Step 1: 라인 선택 조작 테스트 (RED)**
 
 `tests/test_gui_app.py`에 추가한다. 전부 **실제 위젯을 조작한다** — 헬퍼 호출로
 값을 넣으면 이 프로젝트에서 다섯 번 반복된 사고를 여섯 번째로 반복하는 것이다.
@@ -6412,7 +6412,7 @@ def test_anomaly_button_is_disabled_when_every_line_is_valid(qapp, folder):
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -q -k "line_spinbox or anomaly"`
 Expected: `AttributeError: 'MainWindow' object has no attribute 'line_selector'`
 
-- [ ] **Step 2: 조작을 만든다 (GREEN)**
+- [x] **Step 2: 조작을 만든다 (GREEN)**
 
 `ebl_gap_gui/app.py`. 미니 플롯 위젯과 같은 세로 칸에 얇은 조작 줄을 둔다.
 
@@ -6484,7 +6484,7 @@ Expected: `AttributeError: 'MainWindow' object has no attribute 'line_selector'`
 그대로 둔다. 스핀박스 값 설정이 곧 `show_line` 호출이 되도록 배선하되, 무장 시점에는
 신호를 막았으므로 대표 라인은 명시적으로 한 번 그린다.
 
-- [ ] **Step 3: 파일 목록 레이아웃 복구**
+- [x] **Step 3: 파일 목록 레이아웃 복구**
 
 Task 19의 썸네일이 파일 이름을 밀어냈다. 실측:
 
@@ -6520,7 +6520,7 @@ THUMBNAIL_SIZE = 40        # 56 -> 40. 좁은 패널에서 이름을 지우지 �
         splitter.setSizes([360, 700, 300])   # 260 -> 360
 ```
 
-- [ ] **Step 4: 레이아웃을 실측으로 고정하는 테스트**
+- [x] **Step 4: 레이아웃을 실측으로 고정하는 테스트**
 
 `tests/test_gui_panels.py`. 픽셀 값을 박아두지 말고 **관계**를 검사한다.
 
@@ -6548,7 +6548,7 @@ def test_rows_are_tall_enough_for_the_thumbnail(qapp, folder):
     assert table.rowHeight(0) >= table.iconSize().height()
 ```
 
-- [ ] **Step 5: 썸네일이 실제 표에 붙는지 검사한다**
+- [x] **Step 5: 썸네일이 실제 표에 붙는지 검사한다**
 
 리뷰어가 `_fill_row`의 `setIcon` 세 줄을 지워도 277개가 전부 통과하는 것을 확인했다.
 `has_thumbnail()`이 딕셔너리만 보기 때문이다. 기능이 완전히 죽어도 초록이다.
@@ -6569,7 +6569,7 @@ def test_thumbnail_reaches_the_table_item(qapp, records):
 RED 확인: `_fill_row`의 `setIcon` 블록을 잠시 지워 이 테스트가 실패하는 것을 보고
 되돌린다. 그 출력을 보고서에 붙인다. 되돌리는 것을 잊으면 기능이 사라진다.
 
-- [ ] **Step 6: 미니 플롯 기본 높이**
+- [x] **Step 6: 미니 플롯 기본 높이**
 
 `app.py:74-77`의 `right.setSizes([500, 260])`은 실제로는 플롯에 80픽셀만 준다.
 바닥 도크가 중앙 영역을 295픽셀로 줄이기 때문이다. `ProfilePlot`에
@@ -6590,7 +6590,7 @@ def test_profile_plot_has_usable_height_at_the_default_geometry(qapp):
     assert window.profile_plot.height() >= 180
 ```
 
-- [ ] **Step 7: 전체 테스트**
+- [x] **Step 7: 전체 테스트**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과
@@ -6598,7 +6598,7 @@ Expected: 모두 통과
 Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 Expected: `OK`
 
-- [ ] **Step 8: README에 라인 선택을 적는다**
+- [x] **Step 8: README에 라인 선택을 적는다**
 
 사용 순서 4번 뒤에 한 줄 더한다.
 
@@ -6610,7 +6610,7 @@ Expected: `OK`
 
 뒤 번호를 하나씩 민다.
 
-- [ ] **Step 9: 커밋**
+- [x] **Step 9: 커밋**
 
 ```bash
 git add ebl_gap_gui/ tests/ README.md
