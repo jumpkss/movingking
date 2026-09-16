@@ -2909,6 +2909,21 @@ def test_overlay_marks_short_lines_in_red():
     assert red.sum() > 0
 
 
+def test_overlay_survives_an_roi_that_extends_past_the_image():
+    """측정이 되는 ROI는 오버레이도 그려져야 한다.
+
+    extract_profiles는 경계를 벗어난 ROI를 mode="nearest"로 허용한다. 같은 ROI로
+    measure_roi가 성공했는데 오버레이만 IndexError로 터지면, CSV에는 값이 남고
+    그림만 안 나오는 상태가 된다.
+    """
+    img = synth_gap_image(width=100, height=100, gap_nm=20.0, nm_per_px=1.0)
+    roi = Roi(50, 50, 120, 120)
+    result = measure_roi(img, roi, SCALE)
+    overlay = render_overlay(img, roi, result)
+    assert overlay.shape == (100, 100, 3)
+    assert overlay.dtype == np.uint8
+
+
 def test_overlay_png_is_written_and_readable(tmp_path):
     from PIL import Image
 
@@ -2937,7 +2952,11 @@ def test_report_surfaces_warnings(tmp_path):
     session.add(ImageRecord(path=Path("closed.tif"), scale=SCALE, dose=500.0,
                             roi_results=[result]))
     text = format_report(session)
-    assert "short" in text
+    # "short"는 모든 ROI 줄에 라벨로 항상 찍히므로 그것만 보면 구현이 틀려도
+    # 통과한다. 실제로 short 라인이 잡혔는지와, stats.py가 만든 경고 문구가
+    # 리포트에 올라왔는지를 본다.
+    assert result.n_short > 0
+    assert "short 발생 구간 있음" in text
 ```
 
 - [ ] **Step 5: 테스트 실패 확인**
@@ -3065,10 +3084,18 @@ def render_overlay(image, roi: Roi, result: RoiResult) -> np.ndarray:
     """원본 이미지 위에 ROI와 검출된 에지를 그린 RGB 배열을 만든다."""
     canvas = _to_rgb(image)
 
-    canvas[roi.y0, roi.x0 : roi.x1 + 1] = ROI_COLOR
-    canvas[roi.y1, roi.x0 : roi.x1 + 1] = ROI_COLOR
-    canvas[roi.y0 : roi.y1 + 1, roi.x0] = ROI_COLOR
-    canvas[roi.y0 : roi.y1 + 1, roi.x1] = ROI_COLOR
+    # 테두리 좌표를 이미지 안으로 자른다. extract_profiles는 경계를 살짝 벗어난
+    # ROI를 mode="nearest"로 허용하므로 같은 ROI로 measure_roi가 성공한다.
+    # 여기서 자르지 않으면 측정은 되는데 오버레이만 IndexError로 죽어서,
+    # CSV에는 값이 남고 그림만 안 나오는 상태가 된다.
+    y0 = max(0, min(roi.y0, canvas.shape[0] - 1))
+    y1 = max(0, min(roi.y1, canvas.shape[0] - 1))
+    x0 = max(0, min(roi.x0, canvas.shape[1] - 1))
+    x1 = max(0, min(roi.x1, canvas.shape[1] - 1))
+    canvas[y0, x0 : x1 + 1] = ROI_COLOR
+    canvas[y1, x0 : x1 + 1] = ROI_COLOR
+    canvas[y0 : y1 + 1, x0] = ROI_COLOR
+    canvas[y0 : y1 + 1, x1] = ROI_COLOR
 
     for line in result.lines:
         if line.status in STATUS_COLORS:
@@ -3146,7 +3173,7 @@ def format_report(session: Session) -> str:
 - [ ] **Step 7: 테스트 통과 확인**
 
 Run: `python -m pytest tests/test_export.py -v`
-Expected: PASS (9 passed)
+Expected: PASS (10 passed)
 
 - [ ] **Step 8: 엔진 전체 테스트 실행**
 
