@@ -90,12 +90,12 @@ def test_aligned_to_image_inverts_the_sampling_transform():
     from ebl_gap.profile import aligned_to_image
 
     roi = Roi(100, 50, 299, 249)
-    for angle in (0.0, 7.0, -12.0):
+    for angle_deg in (0.0, 7.0, -12.0):
         prof = extract_profiles(np.arange(300 * 400, dtype=float).reshape(300, 400),
-                                roi, angle)
+                                roi, angle_deg)
         # 정렬 좌표 (u, v)에서 뽑은 값과 역변환한 이미지 좌표에서 읽은 값이 같아야 한다.
         u_px, v_px = 37, 91
-        x, y = aligned_to_image(roi, angle, u_px, v_px)
+        x, y = aligned_to_image(roi, angle_deg, u_px, v_px)
         img = np.arange(300 * 400, dtype=float).reshape(300, 400)
         from scipy.ndimage import map_coordinates
         direct = map_coordinates(img, [[y], [x]], order=1, mode="nearest")[0]

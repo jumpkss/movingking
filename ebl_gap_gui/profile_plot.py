@@ -71,7 +71,13 @@ class ProfilePlot(QWidget):
         self._row = line.row
 
     def threshold_lines(self) -> list[pg.InfiniteLine]:
-        """그려진 가로 문턱선들. 테스트가 그림 자체를 검사하기 위한 것이다."""
+        """그려진 가로 문턱선들. 테스트가 그림 자체를 검사하기 위한 것이다.
+
+        items()는 PlotItem이 아니라 QGraphicsView의 것이다(QGraphicsView가 이미
+        items를 정의해서 PlotWidget.__getattr__이 넘기지 않는다). 씬 그래프를
+        직접 읽으므로 오히려 더 정확하다. _plot을 PlotItem으로 바꾸면 여기가
+        깨진다.
+        """
         return [item for item in self._plot.items()
                 if isinstance(item, pg.InfiniteLine) and item.angle == 0]
 

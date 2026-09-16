@@ -57,6 +57,16 @@ def test_flat_profile_reports_no_edges_and_zero_contrast():
     assert a.contrast == pytest.approx(0.0, abs=1e-6)
 
 
+def test_zero_contrast_analysis_still_carries_the_fraction():
+    """대비 0 조기 반환도 실제로 쓴 fraction을 실어 나른다.
+
+    구성 지점이 둘이라 한쪽만 고치면 이 경로에서만 문턱선이 틀린 높이에 선다.
+    """
+    analysis = analyze_profile(np.full(201, 180.0), threshold_fraction=0.3)
+    assert analysis.threshold_fraction == pytest.approx(0.3)
+    assert analysis.left_px is None and analysis.right_px is None
+
+
 def test_hysteresis_suppresses_noise_induced_extra_crossings():
     """문턱 근처에서 잡음이 여러 번 넘나들어도 교차는 한 번으로 센다."""
     p = erf_profile(n=301, gap_px=20.0, sigma=2.0, noise=6.0, seed=3)

@@ -30,6 +30,7 @@ from ebl_gap.export import (
 from ebl_gap.loader import load_image
 from ebl_gap.measure import MeasureParams, measure_roi
 from ebl_gap.profile import extract_profiles
+from ebl_gap.stats import representative_line
 from ebl_gap_gui.calibration import CalibrationDialog
 from ebl_gap_gui.dose_plot import DosePlot
 from ebl_gap_gui.image_view import ImageView
@@ -220,19 +221,12 @@ class MainWindow(QMainWindow):
     def _show_representative_line(self, result) -> None:
         """대표 라인 하나를 미니 플롯에 띄운다.
 
-        폭이 중앙값에 가장 가까운 valid 라인을 고른다. 평균이 어떤 프로파일에서
-        나왔는지 보여주는 것이 목적이므로 첫 줄보다 이쪽이 낫다.
+        어느 라인이 대표인지는 계측 판단이므로 엔진(`representative_line`)이
+        정한다. 여기는 그 결과를 화면에 올리기만 한다.
         """
-        valid = [ln for ln in result.lines
-                 if ln.status == "valid" and ln.width_nm is not None]
-        if not valid:
-            target = result.lines[0].row if result.lines else None
-        else:
-            widths = sorted(ln.width_nm for ln in valid)
-            median_nm = widths[len(widths) // 2]
-            target = min(valid, key=lambda ln: abs(ln.width_nm - median_nm)).row
-        if target is not None:
-            self.show_line(target)
+        line = representative_line(result.lines)
+        if line is not None:
+            self.show_line(line.row)
 
     def _clear_profile(self) -> None:
         """ROI나 이미지가 바뀌면 미니 플롯과 그 원본 프로파일 배열을 함께 버린다.

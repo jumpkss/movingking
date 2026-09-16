@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 
 import numpy as np
@@ -119,3 +120,21 @@ def summarize(lines, *, scale: ScaleInfo, angle_deg: float,
         warnings=tuple(warnings),
         scale=scale,
     )
+
+
+def representative_line(lines: Sequence[LineResult]) -> LineResult | None:
+    """평균을 대표하는 라인 하나. 폭이 중앙값에 가장 가까운 valid 라인이다.
+
+    첫 줄이 아니라 이쪽인 이유: 이 라인의 프로파일을 보고 사용자가 '평균이
+    어디서 나왔나'를 판단한다. valid가 없으면 첫 줄이라도 돌려준다 — 전부
+    short인 이미지에서 왜 short인지 볼 수단이 필요하기 때문이다.
+    """
+    if not lines:
+        return None
+    valid = [ln for ln in lines
+             if ln.status == "valid" and ln.width_nm is not None]
+    if not valid:
+        return lines[0]
+    widths_nm = sorted(ln.width_nm for ln in valid)
+    median_nm = widths_nm[len(widths_nm) // 2]
+    return min(valid, key=lambda ln: abs(ln.width_nm - median_nm))

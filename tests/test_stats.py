@@ -1,6 +1,6 @@
 import pytest
 
-from ebl_gap.stats import mark_outliers, summarize
+from ebl_gap.stats import mark_outliers, representative_line, summarize
 from ebl_gap.types import LineResult, ScaleInfo
 
 SCALE = ScaleInfo(nm_per_px=1.0, source="fei_metadata")
@@ -135,3 +135,28 @@ def test_clean_measurement_produces_no_warnings():
                        angle_deg=1.2)
     assert result.warnings == ()
     assert result.angle_deg == pytest.approx(1.2)
+
+
+def test_representative_line_is_the_median_width_valid_line():
+    """대표 라인은 폭이 중앙값에 가장 가까운 valid 라인이다."""
+    lines = [
+        LineResult(row=0, left_px=0.0, right_px=10.0, width_px=10.0,
+                   width_nm=10.0, status="valid", flags=frozenset(), reason=""),
+        LineResult(row=1, left_px=0.0, right_px=30.0, width_px=30.0,
+                   width_nm=30.0, status="valid", flags=frozenset(), reason=""),
+        LineResult(row=2, left_px=0.0, right_px=20.0, width_px=20.0,
+                   width_nm=20.0, status="valid", flags=frozenset(), reason=""),
+    ]
+    assert representative_line(lines).row == 2
+
+
+def test_representative_line_falls_back_to_the_first_line():
+    """valid가 하나도 없으면 첫 줄을 돌려준다.
+
+    전부 short인 이미지에서도 '왜 short인지'를 보여줄 프로파일이 필요하다.
+    """
+    lines = [LineResult(row=7, left_px=None, right_px=None, width_px=None,
+                        width_nm=None, status="short", flags=frozenset(),
+                        reason="대비 없음")]
+    assert representative_line(lines).row == 7
+    assert representative_line([]) is None

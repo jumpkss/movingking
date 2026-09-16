@@ -189,6 +189,31 @@ def test_selecting_another_image_clears_the_profile_plot(qapp, folder):
     window.measure_current()
     window.select_image(1)
     assert window.profile_plot.has_curve() is False
+    # 플래그가 아니라 그려진 항목을 본다. clear()가 _plot.clear()를 빼먹어도
+    # has_curve()는 False라고 답하므로 플래그만으로는 아무것도 못 지킨다.
+    assert window.profile_plot.threshold_lines() == []
+
+
+def test_switching_to_an_unreadable_image_drops_the_previous_profiles(qapp,
+                                                                      tmp_path):
+    """읽지 못한 이미지로 넘어가면 이전 이미지의 프로파일이 남으면 안 된다.
+
+    빈 배열은 ImageView.set_image에서 일찍 빠져 roi_changed가 나지 않는다.
+    그래서 ROI 경로가 대신 비워 주지 못하는 유일한 경로다. 여기서 배열이
+    남으면 show_line이 앞 이미지의 프로파일을 현재 이미지의 것으로 그린다.
+    """
+    write_sample(tmp_path, gap_nm=90.0, dose=300)
+    # 이름이 z로 시작해야 sorted()에서 뒤로 간다 — 정상 파일이 0번이어야 측정이 된다.
+    (tmp_path / "zbroken.tif").write_bytes(b"not a tiff at all")
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    window.measure_current()
+    assert window._profiles is not None
+
+    window.select_image(1)
+
+    assert window._profiles is None
+    assert window.profile_plot.has_curve() is False
 
 
 def test_open_folder_selects_first_image_exactly_once(qapp, folder, monkeypatch):
@@ -226,6 +251,9 @@ def test_moving_the_roi_clears_the_profile_plot(qapp, folder):
 
     assert window.profile_plot.has_curve() is False
     assert window._profiles is None
+    # 플래그가 아니라 그려진 항목을 본다. clear()가 _plot.clear()를 빼먹어도
+    # has_curve()는 False라고 답하므로 플래그만으로는 아무것도 못 지킨다.
+    assert window.profile_plot.threshold_lines() == []
 
 
 def test_representative_line_is_the_median_width_valid_line(qapp, folder):
