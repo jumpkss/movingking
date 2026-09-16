@@ -6143,7 +6143,7 @@ ROI 이동 후 화면에 실제로 남은 문턱선: [119.91, 119.94]
 태스크가 죽이려던 결함이다. 같은 커밋이 이미 알맞은 도구(`threshold_lines()`,
 그려진 항목에서 파생된다)를 만들어 놨다.
 
-- [ ] **Step 1: 화면을 보는 단언을 더한다**
+- [x] **Step 1: 화면을 보는 단언을 더한다**
 
 `tests/test_gui_app.py`의 `test_moving_the_roi_clears_the_profile_plot`에
 `setPos` 뒤로 한 줄 더한다.
@@ -6177,7 +6177,7 @@ HEAD:              _profiles is None -> True
                     -> "행 50 · valid · 폭 19.98 px = 59.94 nm"
 ```
 
-- [ ] **Step 2: 깨진 파일로 그 경로를 고정하는 테스트 (RED)**
+- [x] **Step 2: 깨진 파일로 그 경로를 고정하는 테스트 (RED)**
 
 `tests/test_gui_app.py`에 추가한다.
 
@@ -6215,7 +6215,7 @@ RED 확인: `app.py`의 `select_image` 안 `self._clear_profile()`을
 281개가 전부 통과한다. 기존 평탄 프로파일 테스트가 기본값 0.5로만 그 가지에 닿기
 때문이다.
 
-- [ ] **Step 3: 조기 반환 경로를 기본값 아닌 fraction으로 친다**
+- [x] **Step 3: 조기 반환 경로를 기본값 아닌 fraction으로 친다**
 
 `tests/test_edges.py`에 추가한다.
 
@@ -6236,7 +6236,7 @@ def test_zero_contrast_analysis_still_carries_the_fraction():
 `items`를 갖고 있어서 씬 그래프를 직접 읽는다. 지금은 그게 **더 강한** 성질이지만
 (그려진 것을 그대로 본다), `_plot`이 `PlotItem`으로 바뀌면 조용히 깨진다.
 
-- [ ] **Step 4: 주석 한 줄**
+- [x] **Step 4: 주석 한 줄**
 
 `ebl_gap_gui/profile_plot.py`의 `threshold_lines()`에 붙인다.
 
@@ -6258,7 +6258,7 @@ def test_zero_contrast_analysis_still_carries_the_fraction():
 Qt 없이 검증할 수 있고, Task 21이 이 값을 스핀박스 초기값으로 쓰기 직전에 옮기는
 것이 나중에 옮기는 것보다 싸다.
 
-- [ ] **Step 5: `ebl_gap/stats.py`에 `representative_line`을 만든다 (RED 먼저)**
+- [x] **Step 5: `ebl_gap/stats.py`에 `representative_line`을 만든다 (RED 먼저)**
 
 `tests/test_stats.py`에 추가한다.
 
@@ -6315,12 +6315,12 @@ def representative_line(lines: Sequence[LineResult]) -> LineResult | None:
 `test_representative_line_is_the_median_width_valid_line`(app 쪽)은 그대로 둔다 —
 배선이 살아 있는지를 지키는 별개의 검사다.
 
-- [ ] **Step 6: 남은 bare `angle` 지역변수**
+- [x] **Step 6: 남은 bare `angle` 지역변수**
 
 `tests/test_profile.py`의 `angle` 지역변수를 `angle_deg`로 고친다. 전역 명명 규칙에
 예외가 없다.
 
-- [ ] **Step 7: 전체 테스트와 엔진 순수성**
+- [x] **Step 7: 전체 테스트와 엔진 순수성**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과 (281 + 새 테스트 4개 = 285)
@@ -6328,7 +6328,7 @@ Expected: 모두 통과 (281 + 새 테스트 4개 = 285)
 Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
 Expected: `OK`
 
-- [ ] **Step 8: 커밋**
+- [x] **Step 8: 커밋**
 
 ```bash
 git add ebl_gap/ ebl_gap_gui/ tests/
