@@ -4535,6 +4535,22 @@ def test_summary_tells_the_user_where_the_bar_was_found(qapp):
     assert "60" in text  # 막대 시작 x 좌표
 
 
+def test_typing_into_the_length_field_works_without_the_helper(qapp):
+    """사용자는 set_length()를 부르지 않는다. 스핀박스에 직접 입력한다.
+
+    헬퍼를 통해서만 테스트하면 실제 폼이 동작하지 않아도 전부 통과한다.
+    이 프로젝트에서 같은 패턴의 버그가 이미 네 번 나왔다.
+    """
+    dialog = CalibrationDialog(databar_image(), databar_top=884)
+    dialog._length.setValue(1.0)
+    dialog._unit.setCurrentText("µm")
+    dialog._confirm.setChecked(True)
+    scale = dialog.scale_info()
+    assert scale is not None
+    assert scale.nm_per_px == pytest.approx(10.0, rel=0.05)
+    assert scale.source == "scalebar_auto"
+
+
 def test_manual_pixel_distance_needs_no_confirmation(qapp):
     """사람이 직접 잰 거리는 이미 눈으로 확인한 값이다."""
     dialog = CalibrationDialog(databar_image(), databar_top=884)
@@ -4604,8 +4620,6 @@ class CalibrationDialog(QDialog):
         array = np.asarray(pixels, dtype=np.float64)
         hit = detect_scalebar(array, databar_top=databar_top) if array.size else None
         self._detected_px: int | None = hit.length_px if hit else None
-        self._manual_px: float | None = None
-        self._length_entered = False
 
         if hit is None:
             summary = ("스케일바를 자동으로 찾지 못했습니다. "
@@ -4668,11 +4682,9 @@ class CalibrationDialog(QDialog):
     def set_length(self, value: float, unit: str) -> None:
         self._length.setValue(float(value))
         self._unit.setCurrentText(unit)
-        self._length_entered = float(value) > 0
 
     def set_manual_pixels(self, distance_px: float) -> None:
         self._manual.setValue(float(distance_px))
-        self._manual_px = float(distance_px) if distance_px > 0 else None
 
     def length_nm(self) -> float:
         return self._length.value() * UNIT_FACTORS[self._unit.currentText()]
@@ -4683,8 +4695,13 @@ class CalibrationDialog(QDialog):
         자동 검출 경로는 사용자가 확인 체크를 해야만 쓴다. 직접 잰 픽셀 거리는
         사람이 이미 이미지를 보고 잰 값이므로 별도 확인이 필요 없다.
         """
+        # 위젯 값만 읽는다. 별도 "입력했음" 플래그를 두면 안 된다 — 헬퍼
+        # 메서드에서만 세워지고 실제 스핀박스 입력에는 반응하지 않아서,
+        # 사용자가 칸에 직접 타이핑하면 그 값이 통째로 무시된다.
+        # 스핀박스 기본값과 하한이 둘 다 0이므로 length_nm <= 0이 "미입력"과
+        # 같은 뜻이고, 플래그는 불필요할 뿐 아니라 해롭다.
         length_nm = self.length_nm()
-        if not self._length_entered or length_nm <= 0:
+        if length_nm <= 0:
             return None
 
         manual_px = self._manual.value()
@@ -4699,7 +4716,7 @@ class CalibrationDialog(QDialog):
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_calibration.py -v`
-Expected: PASS (10 passed)
+Expected: PASS (11 passed)
 
 - [ ] **Step 5: 커밋**
 
