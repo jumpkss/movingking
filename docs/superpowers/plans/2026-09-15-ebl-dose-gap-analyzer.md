@@ -5301,7 +5301,7 @@ git commit -m "feat: wire main window, add entry point and usage documentation"
 `open_folder`에만 있기 때문이다. 둘 중 하나를 지운다면 모든 경로를 덮는 쪽을
 남겨야 한다.
 
-- [ ] **Step 1: 중복 호출을 잡는 테스트를 먼저 쓴다 (RED)**
+- [x] **Step 1: 중복 호출을 잡는 테스트를 먼저 쓴다 (RED)**
 
 `tests/test_gui_app.py`에 추가한다. 헬퍼가 아니라 `open_folder`라는 실제 사용자
 경로를 통해서 센다.
@@ -5337,7 +5337,7 @@ def test_open_folder_selects_first_image_exactly_once(qapp, tmp_path,
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -q -k exactly_once`
 Expected: 실패한다. `calls == [0, 0]`
 
-- [ ] **Step 2: 명시 호출을 지운다 (GREEN)**
+- [x] **Step 2: 명시 호출을 지운다 (GREEN)**
 
 `ebl_gap_gui/app.py`의 `open_folder`에서 `self.select_image(0)` 한 줄만 지운다.
 상태 메시지와 빈 폴더 분기는 그대로 둔다.
@@ -5365,7 +5365,7 @@ README 28행의 "규칙 자체는 설정에서 바꿀 수 있다"는 거짓이�
 없고 `dose_pattern`은 `load_image()`의 키워드 인자로만 닿는다. 리뷰어가
 `ebl_gap_gui/*.py` 전체에서 `설정`과 `dose_pattern`을 grep해 0건을 확인했다.
 
-- [ ] **Step 3: README를 실제 경로로 고친다**
+- [x] **Step 3: README를 실제 경로로 고친다**
 
 ```
    > dose 파싱은 파일명에서 `숫자 + uC` 패턴을 **앞에서부터 처음 나오는 것**으로
@@ -5379,12 +5379,12 @@ README 28행의 "규칙 자체는 설정에서 바꿀 수 있다"는 거짓이�
 Run: `grep -n "설정에서" README.md`
 Expected: 출력 없음
 
-- [ ] **Step 4: 전체 테스트**
+- [x] **Step 4: 전체 테스트**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add ebl_gap_gui/app.py README.md tests/test_gui_app.py
