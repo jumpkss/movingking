@@ -51,6 +51,10 @@ class MainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("EBL dose test 갭 분석")
+        # 지원 하한. 이보다 좁으면 파일 이름 열이 패널 밖으로 밀려나고 이미지
+        # 뷰가 쓸 수 없을 만큼 눌린다. 상수를 고르는 대신 실측으로 정했다:
+        # 800x600에서 이름 열 159px < 뷰포트 185px, 여기에 여유를 둔 값이다.
+        self.setMinimumSize(900, 650)
         self.session = Session()
         self.params = MeasureParams()
 

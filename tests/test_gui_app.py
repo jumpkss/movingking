@@ -340,18 +340,15 @@ def test_anomaly_button_is_disabled_when_every_line_is_valid(qapp, folder):
     assert window.next_anomaly_button.isEnabled() is False
 
 
-@pytest.mark.parametrize("size", [(1400, 900), (1000, 700), (640, 480)])
+@pytest.mark.parametrize("size", [(1400, 900), (1000, 700), (900, 650)])
 def test_the_file_name_fits_beside_the_thumbnail_at_every_size(qapp, folder,
                                                                size):
-    """어떤 창 크기에서도 파일 이름이 살아 있다.
+    """지원하는 어떤 창 크기에서도 파일 이름이 화면에 보인다.
 
-    픽셀 값을 박아두지 않고 관계를 본다: 이름을 그리는 데 필요한 폭이 썸네일을
-    뺀 나머지 칸 폭 안에 들어가야 한다. 넓은 창 하나만 검사하면 여유가 커서
-    어느 변경을 되돌려도 통과한다. dose가 안 잡히는 파일에서는 이름이 행을
-    구분하는 유일한 수단이다.
-
-    640x480은 이름 열을 내용 크기로 잡은 뒤에야 통과한다. Stretch로 두면
-    창이 좁아지는 만큼 이름 열이 먼저 줄어들어 실제로 이름이 잘린다.
+    dose가 안 잡히는 파일에서는 이름이 행을 구분하는 유일한 수단이다. 넓은 창
+    하나만 검사하면 여유가 커서 어느 변경을 되돌려도 통과하므로 여러 크기를 본다.
+    가장 좁은 것이 지원 하한 900x650이다. 그보다 좁은 기하는 setMinimumSize가
+    막으므로 도달할 수 없고, 도달 불가능한 상태를 검사하는 것은 검사가 아니다.
     """
     window = MainWindow()
     window.resize(*size)
@@ -361,11 +358,35 @@ def test_the_file_name_fits_beside_the_thumbnail_at_every_size(qapp, folder,
     qapp.processEvents()
 
     table = window.file_panel._table
-    name = table.item(0, 0).text()
-    needed = table.fontMetrics().horizontalAdvance(name)
-    available = table.columnWidth(0) - table.iconSize().width()
-    assert available >= needed, (
-        f"{size}에서 이름 '{name}'에 {needed}px 필요한데 {available}px 남는다")
+    # 이름을 못 읽게 되는 길은 두 가지고, 둘 다 막아야 뜻이 있다.
+    #
+    # 하나: 열이 내용보다 좁아 이름이 "..."으로 줄어든다. 예전 단언이 쓰던
+    # columnWidth - iconSize는 ResizeToContents 아래서 아이콘이 약분돼 상수가
+    # 되므로 뜻이 없다. 대신 열이 내용의 크기 힌트를 담는지를 직접 본다 —
+    # 아이콘·여백·글자를 Qt가 직접 합산한 값이라 환경이 달라도 성립한다.
+    assert table.sizeHintForColumn(0) <= table.columnWidth(0), (
+        f"{size}에서 이름 열이 {table.columnWidth(0)}px인데 내용에는 "
+        f"{table.sizeHintForColumn(0)}px 필요하다 — 이름이 잘린다")
+    # 둘: 열이 통째로 뷰포트 밖으로 밀려난다. 이때 이름은 줄어들지 않고 그냥
+    # 화면에서 사라지므로 위 단언은 통과한다. 640x480이 그 상태였다.
+    assert table.columnWidth(0) <= table.viewport().width(), (
+        f"{size}에서 이름 열 {table.columnWidth(0)}px이 "
+        f"뷰포트 {table.viewport().width()}px를 넘는다")
+
+
+def test_the_window_refuses_to_shrink_below_its_usable_size(qapp):
+    """더 좁아지면 파일 이름 열이 패널 밖으로 나간다. 지원 하한을 Qt가 지킨다.
+
+    두 변을 따로 본다. 튜플 비교는 사전식이라 (1000, 100)도 (900, 650) 이상으로
+    쳐 주는데, 높이가 눌린 창은 여기서 막으려는 바로 그 상태다.
+    """
+    window = MainWindow()
+    window.resize(640, 480)
+    window.show()
+    qapp.processEvents()
+    assert window.width() >= 900, f"폭 {window.width()}px이 하한 900px보다 좁다"
+    assert window.height() >= 650, \
+        f"높이 {window.height()}px이 하한 650px보다 낮다"
 
 
 def test_rows_are_tall_enough_for_the_thumbnail(qapp, folder):
