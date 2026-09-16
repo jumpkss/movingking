@@ -5283,6 +5283,116 @@ git commit -m "feat: wire main window, add entry point and usage documentation"
 
 ---
 
+### Task 18 수정 라운드: 중복 선택 호출과 README의 허위 안내
+
+리뷰가 실행으로 확인한 두 가지를 고친다.
+
+**1) `open_folder`가 `select_image(0)`을 두 번 부른다.**
+
+`file_panel.set_records()`는 Task 15 수정에서 "행 0으로 다시 불러와도 결과 패널이
+갱신되도록" 항상 `selection_changed(0)`을 **정확히 한 번** 동기 발신하게 만들어
+두었다. 그래서 `set_records()` 호출만으로 이미 `select_image(0)`이 실행된다.
+그 뒤 줄에서 다시 명시적으로 부르는 것은 폴더를 열 때마다 전체 이미지 렌더,
+`autoRange()`, ROI 리셋, `roi_changed` -> `clear_overlay` 왕복을 한 번씩 더
+시킨다. 리뷰어가 호출 횟수를 직접 세어 `[0, 0]` 2회를 확인했다.
+
+경로는 **신호 하나만** 남긴다. 명시 호출 쪽을 지우는 이유는, 다시 불러오기
+경로(같은 행 0으로 재로딩)에서는 신호만이 유일한 갱신 수단이고 명시 호출은
+`open_folder`에만 있기 때문이다. 둘 중 하나를 지운다면 모든 경로를 덮는 쪽을
+남겨야 한다.
+
+- [ ] **Step 1: 중복 호출을 잡는 테스트를 먼저 쓴다 (RED)**
+
+`tests/test_gui_app.py`에 추가한다. 헬퍼가 아니라 `open_folder`라는 실제 사용자
+경로를 통해서 센다.
+
+```python
+def test_open_folder_selects_first_image_exactly_once(qapp, tmp_path,
+                                                      monkeypatch):
+    """폴더 열기가 첫 장을 정확히 한 번만 선택한다.
+
+    set_records가 selection_changed(0)을 동기 발신하므로 명시 호출을 더하면
+    렌더와 ROI 리셋이 두 배로 돈다. 상태가 깨지지는 않지만 낭비이고, 무엇보다
+    '정확히 한 번'이라는 set_records의 불변식을 무너뜨린다.
+    """
+    _write_synth_tif(tmp_path / "a_320uC.tif")
+    _write_synth_tif(tmp_path / "b_340uC.tif")
+    window = MainWindow()
+
+    calls: list[int] = []
+    original = window.select_image
+    monkeypatch.setattr(window, "select_image",
+                        lambda index: (calls.append(index), original(index))[1])
+
+    window.open_folder(tmp_path)
+
+    assert calls == [0]
+    assert window._current == 0
+```
+
+`_write_synth_tif`는 이미 `tests/test_gui_app.py`에 있는 헬퍼를 쓴다. 이름이
+다르면 그 파일의 기존 헬퍼를 그대로 쓰고, 없으면 `tests/synth.py`의
+`synth_gap_image`로 만들어 `tifffile.imwrite`로 저장한다.
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -q -k exactly_once`
+Expected: 실패한다. `calls == [0, 0]`
+
+- [ ] **Step 2: 명시 호출을 지운다 (GREEN)**
+
+`ebl_gap_gui/app.py`의 `open_folder`에서 `self.select_image(0)` 한 줄만 지운다.
+상태 메시지와 빈 폴더 분기는 그대로 둔다.
+
+```python
+        self.file_panel.set_records(self.session.records)
+        for index, pixels in self._pixels.items():
+            self.file_panel.set_thumbnail(index, pixels)
+        self._refresh_session_views()
+        if self.session.records:
+            # 첫 장 선택은 set_records가 발신하는 selection_changed(0)이 한다.
+            # 여기서 또 부르면 렌더와 ROI 리셋이 두 번 돈다.
+            self._set_status(f"{len(self.session.records)}장 불러옴")
+        else:
+            ...
+```
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest tests/test_gui_app.py -q`
+Expected: 모두 통과. 특히 기존의 "폴더를 열면 첫 장이 보인다" 계열 테스트가
+그대로 통과해야 한다 — 신호 경로만으로 선택이 실제로 일어난다는 증거다.
+
+**2) README가 없는 설정 화면을 가리킨다.**
+
+README 28행의 "규칙 자체는 설정에서 바꿀 수 있다"는 거짓이다. GUI에는 설정 화면이
+없고 `dose_pattern`은 `load_image()`의 키워드 인자로만 닿는다. 리뷰어가
+`ebl_gap_gui/*.py` 전체에서 `설정`과 `dose_pattern`을 grep해 0건을 확인했다.
+
+- [ ] **Step 3: README를 실제 경로로 고친다**
+
+```
+   > dose 파싱은 파일명에서 `숫자 + uC` 패턴을 **앞에서부터 처음 나오는 것**으로
+   > 잡는다. `sample_1000uC_and_320uC.tif`처럼 후보가 둘이면 앞의 1000을 쓴다.
+   > 날짜(`20260915_320uC.tif`)는 `uC`가 붙지 않아 무시된다. 값이 틀렸으면 파일
+   > 목록의 dose 칸을 직접 고치면 된다. 규칙 자체를 바꾸려면 파이썬에서
+   > `load_image(path, dose_pattern=r"d(\d+)")`처럼 직접 넘긴다 — GUI에는 이
+   > 설정이 없다.
+```
+
+Run: `grep -n "설정에서" README.md`
+Expected: 출력 없음
+
+- [ ] **Step 4: 전체 테스트**
+
+Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
+Expected: 모두 통과
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git add ebl_gap_gui/app.py README.md tests/test_gui_app.py
+git commit -m "Remove the duplicate first-image selection and fix the README dose note"
+```
+
+---
+
 ### Task 19: 라인 프로파일 미니 플롯과 파일 목록 썸네일
 
 스펙 7절이 요구하는 UI 요소 중 남은 두 가지다. 프로파일 미니 플롯은 장식이 아니라
@@ -5433,7 +5543,9 @@ class ProfilePlot(QWidget):
             (analysis.i_lo + 0.5 * (analysis.i_hi_right - analysis.i_lo), "#bbbbbb"),
         ):
             self._plot.addItem(pg.InfiniteLine(pos=level, angle=0,
-                                               pen=pg.mkPen(color, style=2)))
+                                               pen=pg.mkPen(
+                                                   color,
+                                                   style=Qt.PenStyle.DashLine)))
 
         for edge in (line.left_px, line.right_px):
             if edge is not None:
