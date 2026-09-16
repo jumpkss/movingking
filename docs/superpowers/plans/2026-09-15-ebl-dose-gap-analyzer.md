@@ -6883,7 +6883,7 @@ ROI를 다시 끌고 다시 측정해야 한다.** 폴더 일괄 로드와 dose-
 Task 19/20/21은 `_profiles`를 현재 이미지 하나만 들고 있었다. 회귀가 아니라
 처음부터 없던 기능이다.
 
-- [ ] **Step 1: 돌아왔을 때를 검사하는 테스트 (RED)**
+- [x] **Step 1: 돌아왔을 때를 검사하는 테스트 (RED)**
 
 **주의(Task 21 수정 라운드에서 확인된 함정):** `RoiResult`는 `frozen=True`다.
 `result.lines = tuple(...)`는 `FrozenInstanceError`를 낸다. 상태를 심어야 하면
@@ -6912,7 +6912,7 @@ def test_returning_to_a_measured_image_restores_its_diagnostics(qapp, folder):
     assert window.profile_plot.row() == 40
 ```
 
-- [ ] **Step 2: 레코드별로 보관한다**
+- [x] **Step 2: 레코드별로 보관한다**
 
 `self._profiles: np.ndarray | None` 하나를 `self._profiles_by_index: dict[int,
 np.ndarray]`로 바꾸고, 측정한 ROI도 같이 저장한다.
@@ -6952,7 +6952,7 @@ def test_opening_another_folder_does_not_resurrect_old_profiles(qapp, folder,
     assert window.profile_plot.has_curve() is False
 ```
 
-- [ ] **Step 3: ROI 복원이 재측정을 유발하지 않는지 확인**
+- [x] **Step 3: ROI 복원이 재측정을 유발하지 않는지 확인**
 
 ROI를 프로그램적으로 되돌리면 `roi_changed`가 나고 그것이 `_clear_profile`을 불러
 방금 되살린 것을 지운다. 순서를 명시적으로 다룬다: ROI를 먼저 놓고, 신호가 지나간
@@ -6961,7 +6961,7 @@ ROI를 프로그램적으로 되돌리면 `roi_changed`가 나고 그것이 `_cl
 이 함정을 검사하는 단언이 Step 1 테스트에 이미 들어 있다(`line_selector`가 살아
 있어야 한다). 구현 중에 그것이 빨간지 먼저 확인한다.
 
-- [ ] **Step 3.5: 파일 이름 폭 보장을 창 크기와 무관하게 만든다**
+- [x] **Step 3.5: 파일 이름 폭 보장을 창 크기와 무관하게 만든다**
 
 Task 21 수정 라운드가 남긴 것: 1000x700에서 여유가 **정확히 0픽셀**이다. 통과하지만
 글꼴이나 DPI가 조금만 달라지면 뒤집힌다. 그리고 그것은 테스트의 취약함이기 전에
@@ -7000,7 +7000,7 @@ Task 21 수정 라운드의 두 기하 파라미터 테스트에 더 좁은 기�
 **둘 중 하나라도 안 잡히면 보고하고 멈춘다** — 무조건 보장이 회귀 보호를 없애
 버렸다는 뜻이고, 그러면 구조적 보장과 회귀 보호를 맞바꾼 셈이 된다.
 
-- [ ] **Step 4: 전체 테스트와 커밋**
+- [x] **Step 4: 전체 테스트와 커밋**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 
@@ -7048,7 +7048,7 @@ Task 22 구현자가 Step 3.5의 정지 조건에 걸려 멈췄고, **그 판단
 
 사용자 입장에서 이름은 여전히 못 읽는다. 생략되던 것이 화면 밖으로 밀려났을 뿐이다.
 
-- [ ] **Step 1: 사용자가 보는 것을 재는 단언으로 바꾼다**
+- [x] **Step 1: 사용자가 보는 것을 재는 단언으로 바꾼다**
 
 `tests/test_gui_app.py`의 이름 폭 테스트에서, `ResizeToContents` 아래서는 뜻이 없어진
 `available >= needed` 단언을 **버리고** 실제로 보이는지를 검사한다.
@@ -7061,7 +7061,24 @@ Task 22 구현자가 Step 3.5의 정지 조건에 걸려 멈췄고, **그 판단
         f"뷰포트 {table.viewport().width()}px를 넘는다")
 ```
 
-- [ ] **Step 2: 창 최소 크기를 선언한다**
+**구현 중 확인된 내 오류 3 (Step 1과 Step 3이 서로 어긋난다).** 위 단언 하나만
+남기면 Step 3이 요구하는 `ResizeToContents` 삭제 변이가 세 기하 모두에서
+**통과한다**. 그 변이는 이름 열을 Interactive 기본값 100px로 줄이는데, 100px는
+뷰포트(366/253/219px) 안에 들어가므로 위 단언은 만족되고 이름만 "..."으로
+잘린다. 실측:
+
+```
+변이 뒤   col0 100   뷰포트 366/253/219   내용에 필요한 폭 159
+```
+
+즉 이름이 안 보이게 되는 길이 둘인데(열 안에서 잘림, 열이 화면 밖) 위 단언은
+뒤쪽만 막는다. 버려야 하는 것은 "잘리지 않는다"는 **검사 자체**가 아니라
+`columnWidth - iconSize`라는 **뜻 없는 산술**이었다. 구현은 그 산술을
+`sizeHintForColumn(0) <= columnWidth(0)`으로 바꿔 남기고 위 단언을 더한다.
+크기 힌트는 아이콘·여백·글자를 Qt가 직접 합산한 값이라 아이콘 크기를 고정하지
+않는다 — `THUMBNAIL_SIZE = 56`에서도 전체가 초록인 것을 확인했다.
+
+- [x] **Step 2: 창 최소 크기를 선언한다**
 
 640x480에서 잘리는 진짜 원인은 파일 패널의 스플리터 몫이 130px까지 줄어드는 것이다.
 이 프로그램은 이미지 뷰, 결과 패널, 프로파일 플롯, 바닥 도크를 동시에 띄운다.
@@ -7089,7 +7106,7 @@ def test_the_window_refuses_to_shrink_below_its_usable_size(qapp):
     assert (window.width(), window.height()) >= (900, 650)
 ```
 
-- [ ] **Step 3: 기하 목록을 지원 범위로 맞춘다**
+- [x] **Step 3: 기하 목록을 지원 범위로 맞춘다**
 
 파라미터를 `[(1400, 900), (1000, 700), (900, 650)]`로 둔다. 640x480은 이제 도달할 수
 없으므로 뺀다 — 도달 불가능한 상태를 검사하는 것은 검사가 아니다.
@@ -7099,7 +7116,7 @@ Step 1의 새 단언이 세 기하에서 모두 통과하는지 확인하고, �
 **`THUMBNAIL_SIZE` 변이는 이제 잡히지 않는 것이 정상이다** — 그 상수는 이름 가시성과
 무관하다는 것이 이 라운드의 결론이다. 잡히게 만들려고 단언을 더하지 않는다.
 
-- [ ] **Step 4: 전체 테스트와 커밋**
+- [x] **Step 4: 전체 테스트와 커밋**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Expected: 모두 통과 (304 + 1 = 305 내외)
