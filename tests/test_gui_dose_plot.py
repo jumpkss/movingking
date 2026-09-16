@@ -64,6 +64,23 @@ def test_no_warning_for_a_consistent_session(qapp):
     assert plot.warning_text() == ""
 
 
+def test_short_ratio_uses_valid_plus_short_as_the_denominator(qapp):
+    """분모가 n_valid + n_short인지 경계에서 확인한다.
+
+    52/(1000+52) = 0.0494 -> 임계 5% 미만이라 표시 안 됨.
+    분모를 n_valid로 잘못 쓰면 52/1000 = 0.052로 임계를 넘어 표시된다.
+    값이 극단적인 케이스만 테스트하면 분모를 틀려도 통과하는데, 이 분모가
+    dose 점에 "short 발생" 표시를 붙일지 결정하고 사용자는 그걸 보고 dose를 고른다.
+    """
+    session = Session()
+    session.add(ImageRecord(path=Path("a.tif"), scale=SCALE, dose=300.0,
+                            roi_results=[result(80.0, n_valid=1000, n_short=52)]))
+    plot = DosePlot()
+    plot.set_session(session)
+    assert plot.point_count() == 1
+    assert plot.shorted_point_count() == 0
+
+
 def test_shorted_doses_are_marked_separately(qapp):
     session = Session()
     session.add(ImageRecord(path=Path("a.tif"), scale=SCALE, dose=300.0,
