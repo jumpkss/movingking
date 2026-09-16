@@ -299,8 +299,10 @@ class MainWindow(QMainWindow):
             if candidates else (min(rows) if step > 0 else max(rows))
         if target == current:
             # 이상 라인이 하나뿐이면 setValue가 no-op이라 valueChanged가 안 난다.
-            # 그대로 두면 눌러도 아무 일이 없는 죽은 버튼이 된다.
+            # 다시 그리기만 하면 화면이 그대로라 고장난 버튼과 구별되지 않으므로,
+            # 왜 움직이지 않는지 상태 표시줄로 말해 준다.
             self.show_line(target)
+            self._set_status("이상 라인이 이것 하나입니다")
         else:
             self.line_selector.setValue(target)
 

@@ -1,4 +1,5 @@
 import csv
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -329,28 +330,34 @@ def test_anomaly_button_is_disabled_when_every_line_is_valid(qapp, folder):
     window.open_folder(folder)
     window.measure_current()
     result = window.session.records[0].roi_results[0]
-    if all(ln.status == "valid" for ln in result.lines):
-        assert window.next_anomaly_button.isEnabled() is False
+    assert all(ln.status == "valid" for ln in result.lines), \
+        "픽스처가 전부 valid여야 이 테스트가 뜻이 있다"
+    assert window.next_anomaly_button.isEnabled() is False
 
 
-def test_the_file_name_still_fits_next_to_the_thumbnail(qapp, folder):
-    """썸네일이 파일 이름을 밀어내지 않는다.
+@pytest.mark.parametrize("size", [(1400, 900), (1000, 700)])
+def test_the_file_name_fits_beside_the_thumbnail_at_both_sizes(qapp, folder,
+                                                               size):
+    """좁은 창에서도 파일 이름이 살아 있다.
 
     픽셀 값을 박아두지 않고 관계를 본다: 이름을 그리는 데 필요한 폭이 썸네일을
-    뺀 나머지 칸 폭 안에 들어가야 한다.
+    뺀 나머지 칸 폭 안에 들어가야 한다. 넓은 창 하나만 검사하면 여유가 커서
+    어느 변경을 되돌려도 통과한다. dose가 안 잡히는 파일에서는 이름이 행을
+    구분하는 유일한 수단이다.
     """
     window = MainWindow()
-    window.resize(1400, 900)
+    window.resize(*size)
     window.show()
+    qapp.processEvents()
     window.open_folder(folder)
+    qapp.processEvents()
 
     table = window.file_panel._table
     name = table.item(0, 0).text()
     needed = table.fontMetrics().horizontalAdvance(name)
     available = table.columnWidth(0) - table.iconSize().width()
-
     assert available >= needed, (
-        f"이름 '{name}'에 {needed}px 필요한데 {available}px 남는다")
+        f"{size}에서 이름 '{name}'에 {needed}px 필요한데 {available}px 남는다")
 
 
 def test_rows_are_tall_enough_for_the_thumbnail(qapp, folder):
@@ -366,3 +373,119 @@ def test_profile_plot_has_usable_height_at_the_default_geometry(qapp):
     window.show()
     qapp.processEvents()
     assert window.profile_plot.height() >= 180
+
+
+def _mark_anomalies(window, rows):
+    """현재 이미지의 결과에서 주어진 행을 이상 라인으로 바꾼 뒤 돌려준다.
+
+    RoiResult는 frozen이므로 제자리 대입이 아니라 replace로 갈아 끼운다.
+    상태를 직접 심어 이상 라인 위치를 안다 — 합성 이미지가 어떤 상태를 낼지에
+    기대지 않는 편이 픽스처가 바뀌어도 테스트가 뜻을 잃지 않는다.
+    """
+    record = window.session.records[window._current]
+    result = record.roi_results[0]
+    marked = set(rows)
+    record.roi_results[0] = replace(
+        result,
+        lines=tuple(replace(ln, status="no_edge") if ln.row in marked else ln
+                    for ln in result.lines),
+    )
+    return record.roi_results[0]
+
+
+def test_anomaly_buttons_step_both_ways_and_wrap(qapp, folder):
+    """이상 라인 사이를 앞뒤로 오가고, 끝에서 반대쪽으로 감는다.
+
+    valid 라인에는 절대 서지 않는다 — 이상 라인만 보려고 누르는 버튼이다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    marked = {3, 40, 100, 150, result.lines[-1].row}
+    result = _mark_anomalies(window, marked)
+    window._arm_line_selector(result, representative_row=0)
+
+    window.line_selector.setValue(0)
+    seen = []
+    for _ in range(6):
+        window.next_anomaly_button.click()
+        seen.append(window.profile_plot.row())
+    assert seen == [3, 40, 100, 150, max(marked), 3]   # 끝에서 감긴다
+
+    back = []
+    for _ in range(3):
+        window.prev_anomaly_button.click()
+        back.append(window.profile_plot.row())
+    assert back == [max(marked), 150, 100]
+    assert all(row in marked for row in seen + back)
+
+
+def test_measure_draws_the_representative_line_exactly_once(qapp, folder,
+                                                            monkeypatch):
+    """무장 중 새는 valueChanged가 같은 라인을 두 번 그리게 두지 않는다.
+
+    지금은 _profiles가 먼저 채워져 있어 두 번 그려도 결과가 같지만, 호출
+    순서가 바뀌는 순간 무장 도중의 신호가 빈 배열을 그리게 된다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    drawn: list[int] = []
+    original = window.show_line
+    monkeypatch.setattr(window, "show_line",
+                        lambda row: (drawn.append(row), original(row))[1])
+
+    window.measure_current()
+
+    assert drawn == [window.line_selector.value()], drawn
+
+
+def test_the_bottom_dock_does_not_swallow_the_window(qapp):
+    """바닥 도크가 중앙 영역을 잡아먹지 않는다.
+
+    resizeDocks가 없으면 도크가 창의 60%를 가져가 이미지 뷰가 눌린다.
+    갭을 보려고 여는 프로그램에서 이미지가 가장 작으면 안 된다.
+    """
+    window = MainWindow()
+    window.resize(1400, 900)
+    window.show()
+    qapp.processEvents()
+    assert window.centralWidget().height() >= window.height() // 2
+
+
+def test_moving_the_roi_disables_the_line_controls(qapp, folder_with_short):
+    """플롯이 비었으면 선택기도 죽어야 한다. 살아 있으면 눌러도 아무 일이
+    없는 죽은 버튼이 된다.
+
+    이상 라인이 있는 픽스처를 쓴다. 전부 valid인 폴더에서는 두 버튼이 애초에
+    꺼져 있어서, 세 줄 중 스핀박스 한 줄만 고정된다.
+    """
+    window = MainWindow()
+    window.open_folder(folder_with_short)
+    window.measure_current()
+    assert window.line_selector.isEnabled()
+    assert window.next_anomaly_button.isEnabled()
+    assert window.prev_anomaly_button.isEnabled()
+
+    window.image_view._roi.setPos([120, 130])
+
+    assert window.line_selector.isEnabled() is False
+    assert window.next_anomaly_button.isEnabled() is False
+    assert window.prev_anomaly_button.isEnabled() is False
+
+
+def test_single_anomaly_button_says_so(qapp, folder):
+    """이상 라인이 하나뿐이면 왜 안 움직이는지 말해 준다.
+
+    같은 행을 다시 그리기만 하면 화면이 그대로라 고장난 버튼과 구별되지 않는다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    result = _mark_anomalies(window, {50})
+    window._arm_line_selector(result, representative_row=50)
+
+    window.next_anomaly_button.click()
+
+    assert window.profile_plot.row() == 50
+    assert "하나" in window.status_text()
