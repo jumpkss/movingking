@@ -147,7 +147,8 @@ class MainWindow(QMainWindow):
             self.file_panel.set_thumbnail(index, pixels)
         self._refresh_session_views()
         if self.session.records:
-            self.select_image(0)
+            # 첫 장 선택은 set_records가 발신하는 selection_changed(0)이 한다.
+            # 여기서 또 부르면 렌더와 ROI 리셋이 두 번 돈다.
             self._set_status(f"{len(self.session.records)}장 불러옴")
         else:
             self.image_view.set_image(np.empty((0, 0)))

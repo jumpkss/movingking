@@ -189,3 +189,23 @@ def test_selecting_another_image_clears_the_profile_plot(qapp, folder):
     window.measure_current()
     window.select_image(1)
     assert window.profile_plot.has_curve() is False
+
+
+def test_open_folder_selects_first_image_exactly_once(qapp, folder, monkeypatch):
+    """폴더 열기가 첫 장을 정확히 한 번만 선택한다.
+
+    set_records가 selection_changed(0)을 동기 발신하므로 명시 호출을 더하면
+    렌더와 ROI 리셋이 두 배로 돈다. 상태가 깨지지는 않지만 낭비이고, 무엇보다
+    '정확히 한 번'이라는 set_records의 불변식을 무너뜨린다.
+    """
+    window = MainWindow()
+
+    calls: list[int] = []
+    original = window.select_image
+    monkeypatch.setattr(window, "select_image",
+                        lambda index: (calls.append(index), original(index))[1])
+
+    window.open_folder(folder)
+
+    assert calls == [0]
+    assert window._current == 0
