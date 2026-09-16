@@ -6885,6 +6885,11 @@ Task 19/20/21은 `_profiles`를 현재 이미지 하나만 들고 있었다. 회
 
 - [ ] **Step 1: 돌아왔을 때를 검사하는 테스트 (RED)**
 
+**주의(Task 21 수정 라운드에서 확인된 함정):** `RoiResult`는 `frozen=True`다.
+`result.lines = tuple(...)`는 `FrozenInstanceError`를 낸다. 상태를 심어야 하면
+`dataclasses.replace`로 새 결과를 만들어 `record.roi_results[0]`에 넣는다.
+
+
 ```python
 def test_returning_to_a_measured_image_restores_its_diagnostics(qapp, folder):
     """측정한 이미지로 돌아오면 라인 진단이 그대로 있다.
@@ -6955,6 +6960,45 @@ ROI를 프로그램적으로 되돌리면 `roi_changed`가 나고 그것이 `_cl
 
 이 함정을 검사하는 단언이 Step 1 테스트에 이미 들어 있다(`line_selector`가 살아
 있어야 한다). 구현 중에 그것이 빨간지 먼저 확인한다.
+
+- [ ] **Step 3.5: 파일 이름 폭 보장을 창 크기와 무관하게 만든다**
+
+Task 21 수정 라운드가 남긴 것: 1000x700에서 여유가 **정확히 0픽셀**이다. 통과하지만
+글꼴이나 DPI가 조금만 달라지면 뒤집힌다. 그리고 그것은 테스트의 취약함이기 전에
+**레이아웃의 취약함**이다 — 글꼴이 큰 환경에서는 실제로 이름이 잘린다.
+
+이름 열을 내용 크기로 잡고 남는 폭은 마지막 열이 먹게 하면 창 크기와 무관하게
+일정한 여유가 생긴다. 컨트롤러 실측:
+
+```
+              현재        구조적
+(1400,900)   +113px      +14px
+(1000,700)     +0px      +14px
+ (800,600)    -68px      +14px
+ (640,480)   -119px      +14px
+```
+
+`ebl_gap_gui/panels.py`에서 이름 열의 `Stretch`를 바꾼다.
+
+```python
+        # 이름 열은 내용에 맞춘다. Stretch로 두면 패널이 좁아질 때 이름부터
+        # 잘리는데, 이름은 dose가 안 잡히는 파일에서 행을 구분하는 유일한
+        # 수단이다. 남는 폭은 마지막 열이 먹고, 모자라면 표가 가로로 스크롤된다.
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        header.setStretchLastSection(True)
+```
+
+Task 21 수정 라운드의 두 기하 파라미터 테스트에 더 좁은 기하를 추가한다. 구조적
+보장이므로 이제 640x480에서도 통과해야 한다.
+
+```python
+@pytest.mark.parametrize("size", [(1400, 900), (1000, 700), (640, 480)])
+```
+
+이 변경 뒤에도 `THUMBNAIL_SIZE` 변이와 `ResizeToContents` 삭제 변이가 여전히
+빨간지 확인한다. 아이콘을 56으로 키우면 여유 14픽셀이 사라지므로 잡혀야 한다.
+**둘 중 하나라도 안 잡히면 보고하고 멈춘다** — 무조건 보장이 회귀 보호를 없애
+버렸다는 뜻이고, 그러면 구조적 보장과 회귀 보호를 맞바꾼 셈이 된다.
 
 - [ ] **Step 4: 전체 테스트와 커밋**
 
