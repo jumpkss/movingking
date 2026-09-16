@@ -5926,8 +5926,10 @@ def test_analysis_exposes_the_thresholds_it_actually_used():
     a30 = analyze_profile(profile, threshold_fraction=0.3)
     assert a30.threshold_left == pytest.approx(88.0)
     assert a30.threshold_right == pytest.approx(76.0)
-    # 문턱이 낮아지면 갭이 넓게 잡힌다 — 이 관계가 깨지면 문턱이 안 먹은 것이다.
-    assert a30.width_px > a50.width_px
+    # 갭은 어둡고 전극은 밝다. _locate가 최소점에서 바깥으로 걸어 나가며 문턱
+    # 이상인 첫 샘플에서 멈추므로, 문턱이 낮으면 더 일찍(갭 중심에 더 가까이)
+    # 걸린다 — 즉 갭이 좁게 잡힌다. 이 관계가 깨지면 문턱이 안 먹은 것이다.
+    assert a30.width_px < a50.width_px
 ```
 
 Run: `python -m pytest tests/test_edges.py -q -k thresholds_it_actually_used`
@@ -6001,8 +6003,9 @@ def test_threshold_lines_follow_the_engine_fraction(qapp):
                 if isinstance(item, pg.InfiniteLine) and item.angle == 0]
 ```
 
-RED 확인: Step 3을 잠시 되돌려 `threshold_fraction=0.3`인데도 `[96.0, 116.0]`이
-나오는 것을 보고 다시 적용한다. 그 출력을 보고서에 붙인다.
+RED 확인: Step 3을 잠시 되돌려 `threshold_fraction=0.3`인데도 50% 값이 나오는 것을
+보고 다시 적용한다. 이 테스트의 프로파일은 `i_lo = 40.0`이므로 되돌린 상태의 값은
+`[100.0, 120.0]`이다. 그 출력을 보고서에 붙인다.
 
 **2) ROI를 옮겨도 진단 플롯이 남는다.**
 
