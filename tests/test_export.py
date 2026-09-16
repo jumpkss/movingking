@@ -198,6 +198,27 @@ def test_report_lists_a_closed_dose_in_the_dose_curve_block(tmp_path):
     assert "300" in lines[1]
 
 
+def test_a_closed_dose_line_says_the_roi_could_also_be_off_the_pattern(tmp_path):
+    """평탄 금속 위의 ROI도 전 구간 short를 낸다. 엔진은 둘을 구별할 수 없으므로
+    화면이 단정하면 안 된다.
+
+    실측(갭이 x=256인 합성 이미지, ROI를 왼쪽 평탄 금속 위에): 301줄 전부
+    short가 나고 no_edge는 한 줄도 나지 않는다. 대비가 없다는 점에서 닫힌 갭과
+    빗나간 ROI는 픽셀만으로 같은 그림이다. 사용자가 dose를 고르는 곳이 이
+    블록이므로, 여기서 "갭이 닫혔다"로 단정하면 재지 않은 결론을 대신 말하는
+    것이 된다.
+    """
+    session = Session()
+    session.add(closed_record(tmp_path / "pattern_400uC.tif", 400.0))
+
+    text = format_report(session)
+    block = text.split("dose - 갭 관계")[1]
+
+    assert "전 구간 short (300/300 라인, 유효 0)" in block
+    assert "ROI가 패턴을 벗어났습니다" in block
+    assert "오버레이" in block
+
+
 def test_report_shows_the_dose_block_when_every_dose_is_closed(tmp_path):
     """전 구간이 닫힌 시리즈에서도 블록이 나와야 한다.
 
@@ -215,9 +236,52 @@ def test_report_shows_the_dose_block_when_every_dose_is_closed(tmp_path):
     assert block.count("전 구간 short") == 2
 
 
+def measured_record(path, dose, mean_nm):
+    """측정값이 나온 이미지 레코드."""
+    return ImageRecord(path=path, scale=SCALE, dose=dose, roi_results=[
+        RoiResult(mean_nm=mean_nm, std_nm=1.0, n_valid=300, n_short=0,
+                  n_uncertain=0, n_low_confidence=0, angle_deg=0.0,
+                  lines=(), warnings=(), scale=SCALE)])
+
+
+def test_a_closed_dose_between_two_measured_ones_keeps_its_place(tmp_path):
+    """dose 블록은 측정된 dose와 닫힌 dose를 dose 순서로 섞어서 낸다.
+
+    닫힌 dose가 측정된 dose "사이에" 끼는 경우가 어느 테스트에도 없었다.
+    그래서 정렬을 지우고 측정된 점을 전부 낸 뒤 닫힌 점을 뒤에 붙여도 통과했다.
+    이 블록은 dose 곡선을 글로 옮긴 것이고, 사용자는 여기서 "어느 dose부터
+    갭이 닫히기 시작하는가"를 읽는다 — 순서가 곧 내용이다.
+    """
+    session = Session()
+    session.add(measured_record(tmp_path / "pattern_300uC.tif", 300.0, 90.0))
+    session.add(closed_record(tmp_path / "pattern_400uC.tif", 400.0))
+    session.add(measured_record(tmp_path / "pattern_500uC.tif", 500.0, 40.0))
+
+    block = format_report(session).split("dose - 갭 관계")[1]
+    doses = [ln.split("uC")[0].strip() for ln in block.splitlines() if "uC :" in ln]
+
+    assert doses == ["300.0", "400.0", "500.0"]
+
+
 def test_report_does_not_call_an_unmeasurable_roi_a_closed_dose(tmp_path):
     """판정보류뿐인 이미지는 "닫혔다"가 아니라 "못 쟀다"이다."""
     session = Session()
     session.add(closed_record(tmp_path / "pattern_400uC.tif", 400.0,
                               n_short=0, n_uncertain=300))
     assert "전 구간 short" not in format_report(session)
+
+
+def test_the_report_head_carries_the_session_warning(tmp_path):
+    """모든 dose가 전 구간 short인 세션은 리포트 머리에서 그 사실을 말한다.
+
+    dose 블록의 줄마다 붙는 확인 요청과 달리 이것은 세션 전체의 진단이다.
+    리포트를 실험 노트에 붙이는 사람이 가장 먼저 읽는 자리에 있어야 한다.
+    """
+    session = Session()
+    session.add(closed_record(tmp_path / "pattern_400uC.tif", 400.0))
+    session.add(closed_record(tmp_path / "pattern_500uC.tif", 500.0))
+
+    head = format_report(session).split("- pattern_400uC.tif")[0]
+
+    assert "[세션 경고]" in head
+    assert "ROI" in head

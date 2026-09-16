@@ -15,6 +15,13 @@ from ebl_gap.dataset import Session
 from ebl_gap.profile import aligned_to_image
 from ebl_gap.types import UNCERTAIN_STATUSES, ImageRecord, Roi, RoiResult
 
+#: 전 구간 short인 dose 옆에 반드시 따라붙는 문장.
+#: 엔진은 픽셀만으로 닫힌 갭과 평탄한 금속을 구별할 수 없다. 둘 다 대비가 없고,
+#: 실측하면 빗나간 ROI도 no_edge가 아니라 전 구간 short를 낸다. 리포트의 이 줄이
+#: 사용자가 dose를 고르는 자리이므로, 구별할 수 없다는 사실을 여기에 적는다.
+CLOSED_DOSE_AMBIGUITY = ("갭이 닫혔거나 ROI가 패턴을 벗어났습니다 — "
+                         "오버레이로 확인하세요")
+
 SUMMARY_COLUMNS = [
     "file", "dose_uC", "nm_per_px", "scale_source", "roi_index", "angle_deg",
     "mean_nm", "std_nm", "n_valid", "n_short", "n_uncertain",
@@ -158,9 +165,12 @@ def format_report(session: Session) -> str:
     """사람이 읽는 요약 텍스트."""
     lines: list[str] = ["EBL dose test 갭 측정 요약", "=" * 40, ""]
 
-    for warning in session.scale_warnings():
+    # 세션 전체의 진단은 머리에 둔다. dose 블록의 줄마다 붙는 확인 요청과 달리
+    # 이것은 "이 세션 전체가 이상하다"는 말이라 가장 먼저 읽혀야 한다.
+    session_warnings = [*session.session_warnings(), *session.scale_warnings()]
+    for warning in session_warnings:
         lines.append(f"[세션 경고] {warning}")
-    if session.scale_warnings():
+    if session_warnings:
         lines.append("")
 
     for record in session.records:
@@ -203,8 +213,13 @@ def format_report(session: Session) -> str:
                          f"  {point.dose:>8.1f} uC : {point.mean_nm:7.2f}{spread} nm "
                          f"(유효 {point.n_valid}, short {point.n_short})"))
         for dose_point in closed:
+            # 두 줄로 낸다. 엔진은 닫힌 갭과 패턴을 벗어난 ROI를 구별할 수 없다 —
+            # 평탄한 금속도 전 구간 short를 내기 때문이다. 이 블록이 사용자가
+            # dose를 고르는 자리이므로 없는 확신을 적으면 안 된다.
+            head = f"  {dose_point.dose:>8.1f} uC : "
             rows.append((dose_point.dose,
-                         f"  {dose_point.dose:>8.1f} uC : 전 구간 short "
-                         f"({dose_point.n_short}/{dose_point.n_total} 라인)"))
+                         f"{head}전 구간 short "
+                         f"({dose_point.n_short}/{dose_point.n_total} 라인, 유효 0)"
+                         f"\n{'':>{len(head)}}{CLOSED_DOSE_AMBIGUITY}"))
         lines.extend(text for _, text in sorted(rows, key=lambda r: r[0]))
     return "\n".join(lines)

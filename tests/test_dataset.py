@@ -82,6 +82,20 @@ def test_short_counts_are_summed_across_rois():
     assert session.dose_curve()[0].n_short == 12
 
 
+def test_uncertain_counts_are_summed_across_rois_onto_the_point():
+    """판정보류 라인 수가 dose 점까지 따라와야 한다.
+
+    곡선이 short 비율을 계산하는 분모가 이것을 포함한다. `DosePoint`가 들고
+    오지 않으면 곡선은 결과 패널과 다른 분모를 쓸 수밖에 없다.
+    """
+    session = Session()
+    session.add(record("a.tif", 300.0, [roi_result(40.0, n_uncertain=5),
+                                        roi_result(60.0, n_uncertain=7)]))
+    point = session.dose_curve()[0]
+    assert point.n_uncertain == 12
+    assert point.n_total == point.n_valid + point.n_short + point.n_uncertain
+
+
 def test_mixed_pixel_sizes_produce_a_warning():
     coarse = ScaleInfo(nm_per_px=6.0, source="fei_metadata")
     session = Session()
@@ -118,6 +132,22 @@ def test_a_fully_shorted_dose_is_reported_as_a_closed_dose():
                                    path=Path("b.tif"))
 
 
+def test_a_closed_dose_counts_uncertain_lines_in_its_total():
+    """전 구간 short 줄의 분모는 short + 판정보류다.
+
+    리포트가 "280/300 라인"으로 찍는 그 분모다. 판정보류를 빼면 "280/280"이
+    되어 20줄이 조용히 사라지고, 읽는 사람은 그 ROI가 한 줄도 남김없이
+    short였다고 믿게 된다.
+    """
+    session = Session()
+    session.add(record("b.tif", 400.0,
+                       [roi_result(None, n_valid=0, n_short=280, n_uncertain=20)]))
+
+    closed = session.closed_doses()
+
+    assert [(c.n_short, c.n_total) for c in closed] == [(280, 300)]
+
+
 def test_closed_doses_are_sorted_by_dose():
     session = Session()
     for dose in (500.0, 300.0, 400.0):
@@ -126,11 +156,12 @@ def test_closed_doses_are_sorted_by_dose():
     assert [c.dose for c in session.closed_doses()] == [300.0, 400.0, 500.0]
 
 
-def test_an_unmeasurable_roi_is_not_a_closed_dose():
-    """판정보류뿐인 이미지는 "갭이 닫혔다"가 아니라 "못 쟀다"이다.
+def test_a_dose_with_only_uncertain_lines_is_not_a_closed_dose():
+    """판정보류(no_edge 등)뿐인 이미지는 "전 구간 short"가 아니라 "못 쟀다"이다.
 
-    ROI를 엉뚱한 데 놓아 전부 no_edge가 난 것을 갭 0으로 찍으면, 화면이
-    측정하지 않은 결론을 대신 말하게 된다. 이 태스크가 막으려는 바로 그 종류다.
+    이 검사가 거르는 것은 딱 그것뿐이다. 빗나간 ROI는 걸러 주지 못한다 —
+    평탄한 금속 위의 ROI는 no_edge가 아니라 전 구간 short를 내고, 엔진은
+    그것을 닫힌 갭과 구별할 수 없다. 그 몫은 리포트와 곡선의 문구가 진다.
     """
     session = Session()
     session.add(record("a.tif", 400.0,
@@ -150,3 +181,36 @@ def test_closed_doses_skip_records_without_a_dose():
     session = Session()
     session.add(record("a.tif", None, [roi_result(None, n_valid=0, n_short=300)]))
     assert session.closed_doses() == []
+
+
+def test_a_session_with_no_measured_dose_at_all_warns_about_the_roi():
+    """모든 dose가 전 구간 short면 dose test가 아니라 설정 문제일 가능성이 높다.
+
+    한 dose가 닫히는 것은 정상이다. **모든** dose가 닫히는 dose test는 말이
+    되지 않는다 — ROI가 패턴을 벗어났거나 스케일/문턱이 틀렸을 쪽이 훨씬 그럴듯
+    하다. 엔진은 한 장만 봐서는 둘을 구별할 수 없지만, 세션 전체는 볼 수 있다.
+    """
+    session = Session()
+    for dose in (300.0, 400.0, 500.0):
+        session.add(record(f"{dose:g}.tif", dose,
+                           [roi_result(None, n_valid=0, n_short=300)]))
+
+    warnings = session.session_warnings()
+
+    assert len(warnings) == 1
+    assert "ROI" in warnings[0]
+
+
+def test_one_measured_dose_is_enough_to_silence_the_session_warning():
+    """측정된 점이 하나라도 있으면 설정은 멀쩡하다. 진짜로 닫힌 dose에 매번
+    "ROI를 확인하세요"가 붙으면 그 문장이 무시된다."""
+    session = Session()
+    session.add(record("a.tif", 300.0, [roi_result(55.0)]))
+    session.add(record("b.tif", 400.0, [roi_result(None, n_valid=0, n_short=300)]))
+
+    assert session.session_warnings() == []
+
+
+def test_an_empty_session_says_nothing():
+    """아직 아무것도 측정하지 않은 세션에 설정 경고를 붙이면 안 된다."""
+    assert Session().session_warnings() == []

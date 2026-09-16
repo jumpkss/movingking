@@ -6,7 +6,9 @@ GUI, CLI, 노트북 어디서든 이 함수 하나만 부르면 된다. 여기 �
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ebl_gap.classify import classify_line
 from ebl_gap.edges import analyze_profile
@@ -14,6 +16,10 @@ from ebl_gap.orientation import InsufficientEdgesError, estimate_angle_deg
 from ebl_gap.profile import extract_profiles
 from ebl_gap.stats import mark_outliers, summarize
 from ebl_gap.types import LineResult, Roi, RoiResult, ScaleInfo
+
+if TYPE_CHECKING:  # 런타임 import는 하지 않는다. loader가 tifffile/Pillow를
+    # 끌고 오는데, ROI 측정만 하려는 호출자에게 그 값을 물릴 이유가 없다.
+    from ebl_gap.loader import LoadedImage
 
 #: 자동 추정된 갭 축 각도가 이 절댓값을 넘으면 적합이 무너진 것으로 본다.
 #: 스펙 4.2와 8절이 상정한 시야는 기울기 0~10도이고, 정확도 게이트도 그 범위에서만
@@ -66,6 +72,22 @@ class MeasureParams:
         )
 
 
+def _lowest_scanned_row(roi: Roi, angle_deg: float) -> int:
+    """회전한 ROI가 실제로 훑는 가장 아래 행.
+
+    `extract_profiles`는 ROI 상자를 그대로 읽는 것이 아니라 `angle_deg`만큼
+    돌린 사각형을 훑는다. 측정 방향 오프셋 u가 ±width/2까지 가고 y에 `-u·sin`
+    으로 들어가므로, 모서리는 최대 `(width/2)·|sin θ|` 행만큼 아래로 내려간다.
+    `ceil`로 올림해 픽셀 한 칸도 넘겨주지 않는다.
+
+    세로 방향은 `cos θ`만큼 오히려 줄어들지만 빼지 않는다 — 데이터바 쪽으로는
+    넉넉하게 보는 편이 안전하고, 그래야 0도에서 값이 정확히 `roi.y1`이 되어
+    회전 없는 기존 동작과 한 치도 달라지지 않는다.
+    """
+    angle_rad = math.radians(float(angle_deg))
+    return roi.y1 + math.ceil((roi.width / 2) * abs(math.sin(angle_rad)))
+
+
 def measure_roi(
     image,
     roi: Roi,
@@ -87,17 +109,12 @@ def measure_roi(
             그때는 거부할 수 없다.
 
     Raises:
-        DatabarOverlapError: ROI가 데이터바 영역에 걸칠 때. 스펙 4.1이 요구하는
-            거부이며, 화면이 아니라 여기 있어야 한다 — 노트북에서 직접 부르는
-            경로도 같은 보호를 받아야 하기 때문이다. 데이터바의 균일한 띠는
-            라인마다 short로 판정돼 날조된 이상 비율을 만든다.
+        DatabarOverlapError: 회전까지 감안한 ROI가 데이터바 영역에 걸칠 때.
+            스펙 4.1이 요구하는 거부이며, 화면이 아니라 여기 있어야 한다 —
+            노트북에서 직접 부르는 경로도 같은 보호를 받아야 하기 때문이다.
+            데이터바의 균일한 띠는 라인마다 short로 판정돼 날조된 이상 비율을
+            만든다. 검사는 각도가 정해진 뒤에 한다(`_lowest_scanned_row` 참조).
     """
-    if databar_top is not None and roi.y1 >= databar_top:
-        raise DatabarOverlapError(
-            f"ROI가 데이터바 영역({databar_top}행 이하)을 침범했습니다 — "
-            f"ROI를 데이터바 위쪽으로 다시 잡으세요"
-        )
-
     extra_warnings: list[str] = []
 
     if angle_deg is None:
@@ -115,6 +132,18 @@ def measure_roi(
                     f"갭 축 각도가 {angle_deg:.1f}도로 추정됐습니다 — ROI가 갭을 "
                     f"제대로 가로지르는지 확인하고, 필요하면 각도를 직접 고정하세요"
                 )
+
+    # 데이터바 검사는 여기서 한다. 각도가 확정된 뒤라야 ROI가 실제로 훑는
+    # 마지막 행을 알 수 있고, 엔진은 각도를 아는 첫 번째 자리다.
+    if databar_top is not None:
+        reach = _lowest_scanned_row(roi, angle_deg)
+        if reach >= databar_top:
+            tilt = ("" if reach == roi.y1 else
+                    f"{angle_deg:.1f}도 기운 ROI가 {reach}행까지 훑습니다. ")
+            raise DatabarOverlapError(
+                f"{tilt}ROI가 데이터바 영역({databar_top}행 이하)을 "
+                f"침범했습니다 — ROI를 데이터바 위쪽으로 다시 잡으세요"
+            )
 
     profiles = extract_profiles(image, roi, angle_deg,
                                 along_average=params.along_average)
@@ -148,3 +177,30 @@ def measure_roi(
                           resolution_nm=scale.nm_per_px)
     return summarize(lines, scale=scale, angle_deg=angle_deg,
                      extra_warnings=tuple(extra_warnings))
+
+
+def measure_loaded(loaded: "LoadedImage", roi: Roi, *,
+                   angle_deg: float | None = None,
+                   params: MeasureParams = MeasureParams()) -> RoiResult:
+    """`load_image`가 돌려준 것을 그대로 받아 측정한다.
+
+    `measure_roi`는 스케일과 데이터바 행을 따로 받는데, 그 둘은 이미
+    `LoadedImage` 안에 있다. 손으로 옮겨 적게 두면 언젠가 `databar_top`이
+    빠지고, 그러면 거부가 통째로 꺼져 데이터바의 균일한 띠가 날조된 short
+    비율로 보고된다(리뷰어 실측 26.9%). 노트북에서는 이 함수를 쓴다.
+
+    `measure_roi`의 서명은 건드리지 않는다 — 정확도 게이트가 그쪽을 쓴다.
+
+    Raises:
+        ValueError: 스케일이 확정되지 않은 이미지일 때. 길이 단위를 모르는 채
+            측정하면 나오는 nm 값에 아무 뜻이 없다.
+        DatabarOverlapError: ROI가 데이터바 영역에 걸칠 때.
+    """
+    scale = loaded.record.scale
+    if scale is None:
+        raise ValueError(
+            f"{loaded.record.path.name}: 스케일이 확정되지 않았습니다 — "
+            f"스케일 캘리브레이션으로 nm/px를 먼저 정하세요"
+        )
+    return measure_roi(loaded.pixels, roi, scale, angle_deg=angle_deg,
+                       params=params, databar_top=loaded.databar_top)

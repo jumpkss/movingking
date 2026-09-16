@@ -46,7 +46,11 @@ ebl-gap
 
 ## 측정 설정
 
-도구 모음의 **측정 설정** 줄에 있는 값은 모두 *다음* 측정부터 반영된다.
+도구 모음의 **측정 설정** 줄에 있는 값은 모두 *다음* 측정부터 반영된다. 값을
+돌리는 순간 오버레이와 미니 플롯은 **비워진다** — ROI를 옮겼을 때와 같다. 지금
+그려져 있는 것은 바꾸기 전 설정으로 잰 것이라서, 남겨 두면 0.30 문턱선을 0.50으로
+잡은 에지 위에 겹쳐 보여주게 된다. 같은 이유로 오버레이 PNG 내보내기도 다시
+측정할 때까지 거부된다.
 
 - **갭 축 각도 / 각도 고정** — 측정할 때마다 추정된 각도가 스핀박스에 채워진다.
   스펙이 상정한 기울기는 0~10도이고, 엔진은 15도를 넘는 추정치에 경고를 단다.
@@ -56,8 +60,7 @@ ebl-gap
 - **문턱 비율** (기본 0.5) — 전극 평탄부 밝기와 갭 바닥 밝기 사이 어디를 에지로
   볼지 정한다. 갭이 어두우므로 **낮추면 갭이 좁게, 올리면 넓게** 측정된다.
   실측(참값 10 px 갭, 에지 폭 sigma 1 px): 0.3 → 8.93 px, 0.5 → 10.00 px,
-  0.7 → 11.07 px. 벌어지는 폭은 에지가 뭉툭할수록 커진다. 값을 돌리면 미니
-  플롯의 문턱선이 그 자리에서 따라 움직이므로 눈으로 확인할 수 있다.
+  0.7 → 11.07 px. 벌어지는 폭은 에지가 뭉툭할수록 커진다.
 - **갭 축 이동평균** (기본 1 = 평균 없음) — 갭이 뻗는 방향으로 이 행 수만큼
   평균 낸 뒤 폭을 잰다. 노이즈가 심한 이미지에서 3 정도로 올리면 행 사이 산포가
   줄어드는 대신 세로 방향 해상도를 그만큼 잃는다. 기본값은 요청된 최대 해상도다.
@@ -92,13 +95,20 @@ ebl-gap
 
 ```python
 from ebl_gap.loader import load_image
-from ebl_gap.measure import measure_roi
+from ebl_gap.measure import measure_loaded
 from ebl_gap.types import Roi
 
 loaded = load_image("pattern_320uC.tif")
-result = measure_roi(loaded.pixels, Roi(400, 300, 700, 600), loaded.record.scale)
+result = measure_loaded(loaded, Roi(400, 300, 700, 600))
 print(result.mean_nm, result.n_valid, result.warnings)
 ```
+
+`measure_loaded`를 쓴다. 스케일과 **데이터바 위치**가 `loaded` 안에 이미 들어
+있어서 옮겨 적을 일이 없기 때문이다. 하위 함수 `measure_roi(pixels, roi, scale)`를
+직접 부르면 `databar_top`이 기본 `None`이라 데이터바 거부가 통째로 꺼진다 —
+ROI가 데이터바에 걸치면 균일한 띠가 라인마다 short로 판정돼 날조된 이상 비율
+(실측 26.9%)이 그대로 결과에 실린다. 각도를 직접 잡고 싶으면
+`measure_loaded(loaded, roi, angle_deg=2.0)`처럼 넘긴다.
 
 ## 테스트
 

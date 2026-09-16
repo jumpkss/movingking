@@ -117,13 +117,9 @@ class MainWindow(QMainWindow):
 
         self.file_panel.selection_changed.connect(self.select_image)
         self.file_panel.dose_edited.connect(lambda *_: self._refresh_session_views())
-        # ROI를 옮기면 낡은 오버레이를 지운다. 측정 결과는 그 ROI에 묶여 있으므로,
-        # 새 위치에 이전 위치의 에지가 그려진 채로 남으면 사용자가 틀린 그림을
-        # 보고 판단하게 된다. 다시 측정할 때 새 오버레이가 그려진다.
-        self.image_view.roi_changed.connect(self.image_view.clear_overlay)
-        # 미니 플롯도 ROI에 묶여 있다. x축이 그 ROI의 정렬 좌표계이므로
-        # ROI가 움직이면 축 자체가 다른 뜻이 된다.
-        self.image_view.roi_changed.connect(self._clear_profile)
+        # ROI를 옮기면 그 ROI로 그린 것을 전부 버린다. 측정 설정 변경도 같은
+        # 슬롯을 탄다 — 처리가 갈라지면 한쪽에만 고친 것이 다른 쪽에 빠진다.
+        self.image_view.roi_changed.connect(self._discard_stale_diagnostics)
         self.line_selector.valueChanged.connect(self.show_line)
         self.angle_deg_spin.valueChanged.connect(self._angle_controls_changed)
         self.angle_lock_check.toggled.connect(self._angle_controls_changed)
@@ -203,21 +199,34 @@ class MainWindow(QMainWindow):
         bar.addWidget(QLabel(" 갭 축 이동평균 "))
         bar.addWidget(self.along_average_spin)
 
+    def _discard_stale_diagnostics(self) -> None:
+        """지금 화면에 있는 것이 더는 현재 조건으로 잰 것이 아니다 — 전부 버린다.
+
+        ROI 이동과 설정 변경이 같은 처리를 받는 자리다. 둘 다 (무엇으로 쟀는가,
+        무엇이 그려져 있는가) 쌍을 깨뜨린다. 오버레이, 미니 플롯, 프로파일
+        보관함, 라인 조작이 함께 사라져야 반쪽짜리 화면이 남지 않는다.
+        보관함이 비면 오버레이 PNG 내보내기도 같은 이유로 거부된다.
+        """
+        self.image_view.clear_overlay()
+        self._clear_profile()
+
     def _measure_settings_changed(self, *_) -> None:
-        """조절값을 엔진 파라미터에 옮기고, 보이는 진단을 즉시 맞춰 그린다.
+        """조절값을 엔진 파라미터에 옮기고, 그 값으로 재지 않은 그림을 버린다.
 
         MeasureParams는 frozen이므로 통째로 갈아 끼운다. 여기서 다시 측정하지는
         않는다 — 스핀박스를 한 칸씩 돌리는 동안 ROI 전체를 매번 재게 된다.
-        다만 미니 플롯은 다시 그린다: 문턱선은 엔진이 쓴 값을 그대로 받으므로
-        (Task 20) 문턱 비율을 돌리면 선이 따라 움직이는 것이 바로 보인다.
+
+        새 params로 미니 플롯만 다시 그리지도 않는다. 그렇게 하면 0.30 문턱선이
+        0.50으로 잡은 에지 위에 겹쳐 그려진다 — `ProfilePlot.show_line`의 주석이
+        금지한 그림이고, 사용자는 그것을 "새 문턱으로 잰 결과"로 읽는다.
+        섞인 그림보다 빈 그림이 낫다.
         """
         self.params = replace(
             self.params,
             threshold_fraction=self.threshold_spin.value(),
             along_average=self.along_average_spin.value(),
         )
-        if self.line_selector.isEnabled():
-            self.show_line(self.line_selector.value())
+        self._discard_stale_diagnostics()
         self._set_status("측정 설정이 바뀌었습니다 — 다시 측정하세요")
 
     def _angle_controls_changed(self, *_) -> None:
@@ -374,10 +383,17 @@ class MainWindow(QMainWindow):
         self._refresh_session_views()
 
         if result.mean_nm is None:
-            self._set_status("갭 측정 불가 — 결과 패널의 경고를 확인하세요")
+            message = "갭 측정 불가 — 결과 패널의 경고를 확인하세요"
         else:
-            self._set_status(f"갭 {result.mean_nm:.2f} nm "
-                             f"(유효 {result.n_valid} 라인)")
+            message = (f"갭 {result.mean_nm:.2f} nm "
+                       f"(유효 {result.n_valid} 라인)")
+        # 세션 전체를 봐야 보이는 진단을 여기에 얹는다. 한 장짜리 메시지만
+        # 보여주면 "이 dose에서 갭이 닫혔다"로 읽히는데, 시리즈 전체가 닫혔다면
+        # 그쪽이 아니라 설정을 의심해야 한다. 측정 직후 사용자가 읽는 줄은
+        # 이것 하나뿐이므로 다른 채널로는 닿지 않는다.
+        for warning in self.session.session_warnings():
+            message = f"{message} | {warning}"
+        self._set_status(message)
         self._arm_angle_deg_spin(result.angle_deg)
 
     def _arm_angle_deg_spin(self, angle_deg: float) -> None:
@@ -449,11 +465,12 @@ class MainWindow(QMainWindow):
             self.line_selector.setValue(target)
 
     def _clear_profile(self) -> None:
-        """ROI가 움직였다 — 현재 이미지의 보관분까지 버린다.
+        """ROI나 측정 설정이 바뀌었다 — 현재 이미지의 보관분까지 버린다.
 
-        보관분을 남겨두면 다음에 이 이미지로 돌아왔을 때 옮기기 전 위치의
-        프로파일이 되살아난다. 프로파일의 x축은 그 ROI의 정렬 좌표계이므로,
-        위치가 어긋난 프로파일은 축이 다른 뜻인 채로 읽히는 틀린 진단이다.
+        보관분을 남겨두면 다음에 이 이미지로 돌아왔을 때 옮기기 전 위치의,
+        혹은 바꾸기 전 설정으로 뽑은 프로파일이 되살아난다. 프로파일의 x축은
+        그 ROI의 정렬 좌표계이고 값은 그때의 이동평균으로 뽑은 것이므로,
+        어긋난 프로파일은 축과 값이 다른 뜻인 채로 읽히는 틀린 진단이다.
         """
         if self._current is not None:
             self._profiles_by_index.pop(self._current, None)
@@ -536,13 +553,15 @@ class MainWindow(QMainWindow):
             self._set_status("먼저 측정하세요")
             return
         # 화면에 있는 ROI가 아니라 *측정에 쓰인* ROI로 그린다. 둘은 사용자가
-        # ROI를 옮기는 순간 갈라지는데, roi_changed는 roi_results를 지우지 않으므로
-        # 지금의 ROI에 그때의 결과를 겹쳐 그리면 평탄한 금속 위에 에지가 찍힌
-        # 사진이 파일로 나간다. 화면 오버레이는 지워지지만 이 PNG는 실험 노트에
-        # 남아 더 오래 간다. select_image가 쓰는 것과 같은 출처를 쓴다.
+        # ROI를 옮기거나 측정 설정을 돌리는 순간 갈라지는데, 어느 쪽도
+        # roi_results를 지우지 않으므로 지금의 ROI에 그때의 결과를 겹쳐 그리면
+        # 평탄한 금속 위에 에지가 찍힌 사진이 파일로 나간다. 화면 오버레이는
+        # 지워지지만 이 PNG는 실험 노트에 남아 더 오래 간다. 보관함이 비어
+        # 있다는 것이 곧 "이 결과는 지금 조건으로 잰 것이 아니다"라는 뜻이다.
         roi = self._measured_rois.get(self._current)
         if roi is None:
-            self._set_status("ROI가 측정 위치에서 벗어났습니다 — 다시 측정하세요")
+            self._set_status(
+                "측정 이후 ROI나 측정 설정이 바뀌었습니다 — 다시 측정하세요")
             return
         write_overlay_png(path, self._pixels[self._current], roi,
                           record.roi_results[0])

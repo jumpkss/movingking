@@ -740,6 +740,43 @@ def test_a_dose_whose_gap_closed_stays_on_the_curve_and_in_the_report(qapp,
     assert "400.0 uC" in block and "전 구간 short" in block
 
 
+def test_a_session_where_every_dose_closes_suspects_the_setup(qapp, tmp_path):
+    """모든 dose가 전 구간 short면 상태 표시줄이 설정을 의심하라고 말한다.
+
+    한 장만 보면 "갭 측정 불가"는 이 dose에서 갭이 닫혔다는 뜻으로 읽힌다.
+    그런데 시리즈 전체가 그렇다면 dose test로서 말이 안 되고, ROI가 패턴을
+    벗어났거나 스케일·문턱이 틀렸을 쪽이 훨씬 그럴듯하다. 사용자가 측정 직후에
+    보는 줄은 이것 하나뿐이다.
+    """
+    write_closed_sample(tmp_path, dose=300)
+    write_closed_sample(tmp_path, dose=400)
+
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    for index in (0, 1):
+        window.select_image(index)
+        window.measure_current()
+
+    assert "ROI" in window.status_text()
+    assert "확인" in window.status_text()
+
+
+def test_one_measured_dose_keeps_the_setup_warning_off_the_status_bar(qapp,
+                                                                      tmp_path):
+    """진짜로 닫힌 dose 하나에까지 설정 경고가 붙으면 그 문장이 무시된다."""
+    write_sample(tmp_path, gap_nm=90.0, dose=300)
+    write_closed_sample(tmp_path, dose=400)
+
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    for index in (0, 1):
+        window.select_image(index)
+        window.measure_current()
+
+    assert "갭 측정 불가" in window.status_text()
+    assert "스케일·문턱" not in window.status_text()
+
+
 def test_opening_a_png_folder_says_what_to_do_instead_of_a_tiff_error(qapp,
                                                                       tmp_path):
     """PNG 크롭 폴더에서 상태 표시줄과 파일 목록이 다음 행동을 말해 준다.
@@ -881,20 +918,82 @@ def test_the_along_average_control_reaches_the_engine(qapp, folder):
     assert smoothed_std_nm < 0.9 * raw_std_nm
 
 
-def test_changing_the_threshold_moves_the_profile_plot_line(qapp, folder):
-    """Task 20이 보장한 '문턱선은 엔진 값을 따라간다'가 조작으로 눈에 보인다."""
+def test_changing_the_threshold_blanks_the_profile_plot_instead_of_mixing_it(
+        qapp, folder):
+    """문턱을 바꾸면 미니 플롯은 따라 움직이는 것이 아니라 비워진다.
+
+    따라 움직이게 하면 0.30 문턱선을 0.50으로 잡은 에지 위에 겹쳐 그리게 된다 —
+    `ProfilePlot.show_line`의 주석이 금지한 바로 그 그림이고, 사용자는 그것을
+    "새 문턱으로 잰 결과"로 읽는다. 섞인 그림보다 빈 그림이 낫다.
+    """
     window = MainWindow()
     window.open_folder(folder)
     window.measure_current()
-    before = sorted(item.value()
-                    for item in window.profile_plot.threshold_lines())
+    assert len(window.profile_plot.threshold_lines()) == 2
 
     window.threshold_spin.setValue(0.30)
 
-    after = sorted(item.value()
-                   for item in window.profile_plot.threshold_lines())
-    assert len(after) == 2
-    assert all(low < high for low, high in zip(after, before))
+    assert window.profile_plot.threshold_lines() == []
+    assert window.profile_plot.has_curve() is False
+
+
+def test_changing_a_measure_setting_is_treated_like_moving_the_roi(qapp, folder):
+    """설정을 바꾸면 그 설정으로 재지 않은 그림은 전부 사라져야 한다.
+
+    Task 23이 (ROI, 결과) 쌍 불변식을 세웠는데 설정은 (params, 결과)라는 쌍을
+    새로 만들고 아무것도 유지하지 않았다. 문턱을 0.50에서 0.30으로 돌린 뒤
+    재측정하지 않아도 오버레이와 미니 플롯이 0.50으로 잰 에지를 그대로 들고
+    있었다. ROI를 옮겼을 때와 똑같이 버린다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    assert window.image_view.has_overlay()
+
+    window.along_average_spin.setValue(5)
+
+    assert window.image_view.has_overlay() is False
+    assert window.profile_plot.has_curve() is False
+    assert window.line_selector.isEnabled() is False
+    assert window._profiles_by_index == {}
+    assert window._measured_rois == {}
+
+
+def test_changing_a_measure_setting_says_why_the_screen_went_blank(qapp, folder):
+    """화면을 비웠으면 왜 비웠는지 말해야 한다.
+
+    이 줄을 지워도 358개가 통과했다. 지우면 화면은 텅 빈 채로 상태 표시줄만
+    방금 성공한 측정값을 계속 말하게 되고, 사용자는 진단이 사라진 이유를
+    어디에서도 읽을 수 없다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    assert "nm" in window.status_text()
+
+    window.threshold_spin.setValue(0.30)
+
+    assert "설정" in window.status_text()
+    assert "다시 측정" in window.status_text()
+
+
+def test_exporting_an_overlay_after_changing_a_setting_is_refused(qapp, folder,
+                                                                  tmp_path):
+    """실험 노트에 "문턱 0.30"이라 적으면서 0.50으로 잰 그림을 붙이면 안 된다.
+
+    화면은 비워지지만 PNG는 파일로 남아 화면보다 오래 간다. ROI를 옮겼을 때와
+    같은 이유로 같은 거부를 받는다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    window.threshold_spin.setValue(0.30)
+
+    out = tmp_path / "overlay.png"
+    window.export_overlay(str(out))
+
+    assert out.exists() is False
+    assert "다시 측정" in window.status_text()
 
 
 def test_measuring_an_roi_that_reaches_into_the_databar_is_refused(qapp,

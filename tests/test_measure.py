@@ -1,8 +1,16 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from ebl_gap.measure import MeasureParams, measure_roi
-from ebl_gap.types import Roi, ScaleInfo
+from ebl_gap.loader import LoadedImage
+from ebl_gap.measure import (
+    DatabarOverlapError,
+    MeasureParams,
+    measure_loaded,
+    measure_roi,
+)
+from ebl_gap.types import ImageRecord, Roi, ScaleInfo
 from tests.synth import synth_gap_image
 
 SCALE = ScaleInfo(nm_per_px=1.0, source="fei_metadata")
@@ -154,3 +162,73 @@ def test_the_first_databar_row_already_counts_as_intrusion():
     with pytest.raises(ValueError, match="데이터바"):
         measure_roi(img, ROI, SCALE, databar_top=ROI.y1)
     assert measure_roi(img, ROI, SCALE, databar_top=ROI.y1 + 1) is not None
+
+
+def test_a_tilted_roi_that_swings_into_the_databar_is_refused():
+    """회전 전 상자만 보면 통과하지만, 실제로 훑는 행은 데이터바 안이다.
+
+    `roi.y1 >= databar_top`은 회전 **전** 상자로 검사하는데 `extract_profiles`는
+    `angle_deg`만큼 돌린 사각형을 훑는다. 모서리는 최대 (width/2)*|sin θ| 행만큼
+    아래로 내려간다. 리뷰어 실측: y1=451, databar_top=452에서 0도면 short 0%,
+    12도면 8.9% — 5% 문턱을 넘어 dose 곡선에 빨간 X가 날조된 데이터로 붙는다.
+    엔진은 각도를 아는 첫 번째 자리이므로 각도가 정해진 뒤에 검사한다.
+    """
+    img = synth_gap_image(width=512, height=512, gap_nm=40.0, nm_per_px=1.0)
+    img[452:, :] = 10.0
+    roi = Roi(106, 151, 406, 451)  # 가로 301px, y1은 데이터바 바로 위 한 줄
+
+    # 0도에서는 지금과 똑같이 통과해야 한다.
+    assert measure_roi(img, roi, SCALE, angle_deg=0.0,
+                       databar_top=452) is not None
+
+    with pytest.raises(DatabarOverlapError, match="데이터바") as caught:
+        measure_roi(img, roi, SCALE, angle_deg=12.0, databar_top=452)
+    assert "483" in str(caught.value), "몇 행까지 훑는지를 말해 줘야 한다"
+
+
+def _loaded(pixels, databar_top, scale=SCALE):
+    """load_image가 돌려주는 것과 같은 모양의 LoadedImage."""
+    record = ImageRecord(path=Path("pattern_300uC.tif"), scale=scale, dose=300.0)
+    return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
+
+
+def test_measure_loaded_passes_the_databar_row_the_caller_never_typed():
+    """노트북 경로가 데이터바 보호를 자동으로 받는다.
+
+    `measure_roi`의 `databar_top`은 기본 None이라 호출자가 잊으면 거부가 통째로
+    꺼진다. 리뷰어 실측: README 형태로 부르면 26.9%의 날조된 short 비율이 그대로
+    나왔다. `LoadedImage`는 그 행을 이미 들고 있으므로, 잊을 수 있는 자리를
+    아예 없앤다 — 예제만 고치면 다음 사람이 또 잊는다.
+    """
+    img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
+    img[380:, :] = 10.0
+    with pytest.raises(DatabarOverlapError, match="데이터바"):
+        measure_loaded(_loaded(img, databar_top=380), ROI)
+
+
+def test_measure_loaded_measures_exactly_what_measure_roi_would():
+    """편의 함수가 다른 답을 내면 두 경로가 갈라진다."""
+    img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
+    direct = measure_roi(img, ROI, SCALE)
+    convenience = measure_loaded(_loaded(img, databar_top=None), ROI)
+    assert convenience.mean_nm == pytest.approx(direct.mean_nm)
+    assert convenience.scale is SCALE
+
+
+def test_measure_loaded_threads_params_and_a_locked_angle():
+    img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0, angle_deg=6.0,
+                          edge_sigma_px=3.0)
+    loaded = _loaded(img, databar_top=None)
+    narrow = measure_loaded(loaded, ROI, angle_deg=6.0,
+                            params=MeasureParams(threshold_fraction=0.3))
+    wide = measure_loaded(loaded, ROI, angle_deg=6.0,
+                          params=MeasureParams(threshold_fraction=0.7))
+    assert narrow.angle_deg == pytest.approx(6.0)
+    assert narrow.mean_nm < 40.0 < wide.mean_nm
+
+
+def test_measure_loaded_says_so_when_the_scale_is_not_settled():
+    """스케일을 못 읽은 이미지(PNG 크롭 등)에 AttributeError 대신 할 말을 준다."""
+    img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
+    with pytest.raises(ValueError, match="스케일"):
+        measure_loaded(_loaded(img, databar_top=None, scale=None), ROI)

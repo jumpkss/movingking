@@ -35,7 +35,19 @@ class DosePoint:
     std_nm: float | None
     n_valid: int
     n_short: int
+    n_uncertain: int
     path: Path
+
+    @property
+    def n_total(self) -> int:
+        """이 dose에서 판정된 라인 전부. short 비율의 분모다.
+
+        `RoiResult.n_total`과 같은 정의여야 한다. 곡선과 결과 패널이 다른
+        분모를 쓰면 같은 한 장을 두고 두 화면이 다른 답을 준다 — 50 valid /
+        3 short / 47 판정보류에서 패널은 3.0%로 조용한데 곡선은 5.66%로
+        빨간 X를 붙인다. 사용자가 dose를 고르는 곳은 곡선이다.
+        """
+        return self.n_valid + self.n_short + self.n_uncertain
 
 
 @dataclass(frozen=True)
@@ -88,6 +100,7 @@ class Session:
                 std_nm=(sum(spreads) / len(spreads)) if spreads else None,
                 n_valid=total_valid,
                 n_short=sum(r.n_short for r in record.roi_results),
+                n_uncertain=sum(r.n_uncertain for r in record.roi_results),
                 path=record.path,
             ))
         return sorted(points, key=lambda p: p.dose)
@@ -99,9 +112,15 @@ class Session:
         답의 절반이 지워진다. 표와 CSV에는 남지만 사용자가 dose를 고르는 곳은
         곡선이다.
 
-        "닫혔다"와 "못 쟀다"를 가른다. 유효 라인이 하나도 없고 short가 판정보류보다
-        많을 때만 닫힌 것으로 본다. ROI를 엉뚱한 데 놓아 전부 no_edge가 난 것까지
-        갭 0으로 찍으면, 화면이 측정하지 않은 결론을 대신 말하게 된다.
+        유효 라인이 하나도 없고 short가 판정보류보다 많을 때만 여기 들어온다.
+        이 규칙이 가르는 것은 "전 구간 short"와 "못 쟀다(판정보류뿐)"이지,
+        "갭이 닫혔다"와 "ROI가 빗나갔다"가 아니다. 엔진은 픽셀만으로 그 둘을
+        구별할 수 없다 — 평탄한 금속과 닫힌 갭은 둘 다 대비가 없고, 실측하면
+        빗나간 ROI도 no_edge가 아니라 전 구간 short를 낸다(갭이 x=256인 합성
+        이미지에서 ROI를 왼쪽 금속 위에 놓으면 301줄 전부 short다).
+
+        그러므로 이 목록의 이름을 곧이곧대로 "갭이 닫힌 dose"로 읽으면 안 된다.
+        소비자(리포트, dose 곡선)는 단정하지 말고 두 가능성을 함께 적어야 한다.
         """
         closed: list[ClosedDose] = []
         for record in self.records:
@@ -121,6 +140,25 @@ class Session:
                 path=record.path,
             ))
         return sorted(closed, key=lambda c: c.dose)
+
+    def session_warnings(self) -> list[str]:
+        """한 장만 봐서는 알 수 없고 세션 전체를 봐야 보이는 경고.
+
+        한 dose에서 갭이 닫히는 것은 정상이고, 그것이 dose test의 답이다.
+        그런데 **모든** dose가 전 구간 short인 것은 dose test로서 말이 되지
+        않는다 — ROI가 패턴을 벗어났거나 스케일·문턱 설정이 틀렸을 가능성이
+        훨씬 높다. `closed_doses()`가 한 장 단위로는 구별할 수 없는 것을,
+        여기서는 "측정된 점이 하나도 없다"는 정황으로 한 번 말할 수 있다.
+
+        틀렸을 때의 비용은 진짜로 전부 닫힌 시리즈에 한 줄이 더 붙는 것뿐이다.
+        """
+        if self.dose_curve() or not self.closed_doses():
+            return []
+        return [
+            "세션의 모든 dose가 전 구간 short입니다 — dose test라면 나올 수 없는 "
+            "결과이므로, ROI가 패턴을 벗어나지 않았는지와 스케일·문턱 설정을 "
+            "먼저 확인하세요"
+        ]
 
     def scale_warnings(self) -> list[str]:
         """세션 안에서 배율이 섞였는지 확인한다."""
