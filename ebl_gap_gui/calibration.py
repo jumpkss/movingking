@@ -38,8 +38,6 @@ class CalibrationDialog(QDialog):
         array = np.asarray(pixels, dtype=np.float64)
         hit = detect_scalebar(array, databar_top=databar_top) if array.size else None
         self._detected_px: int | None = hit.length_px if hit else None
-        self._manual_px: float | None = None
-        self._length_entered = False
 
         if hit is None:
             summary = ("스케일바를 자동으로 찾지 못했습니다. "
@@ -102,11 +100,9 @@ class CalibrationDialog(QDialog):
     def set_length(self, value: float, unit: str) -> None:
         self._length.setValue(float(value))
         self._unit.setCurrentText(unit)
-        self._length_entered = float(value) > 0
 
     def set_manual_pixels(self, distance_px: float) -> None:
         self._manual.setValue(float(distance_px))
-        self._manual_px = float(distance_px) if distance_px > 0 else None
 
     def length_nm(self) -> float:
         return self._length.value() * UNIT_FACTORS[self._unit.currentText()]
@@ -117,8 +113,13 @@ class CalibrationDialog(QDialog):
         자동 검출 경로는 사용자가 확인 체크를 해야만 쓴다. 직접 잰 픽셀 거리는
         사람이 이미 이미지를 보고 잰 값이므로 별도 확인이 필요 없다.
         """
+        # 위젯 값만 읽는다. 별도 "입력했음" 플래그를 두면 안 된다 — 헬퍼
+        # 메서드에서만 세워지고 실제 스핀박스 입력에는 반응하지 않아서,
+        # 사용자가 칸에 직접 타이핑하면 그 값이 통째로 무시된다.
+        # 스핀박스 기본값과 하한이 둘 다 0이므로 length_nm <= 0이 "미입력"과
+        # 같은 뜻이고, 플래그는 불필요할 뿐 아니라 해롭다.
         length_nm = self.length_nm()
-        if not self._length_entered or length_nm <= 0:
+        if length_nm <= 0:
             return None
 
         manual_px = self._manual.value()

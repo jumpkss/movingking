@@ -63,6 +63,22 @@ def test_summary_tells_the_user_where_the_bar_was_found(qapp):
     assert "60" in text  # 막대 시작 x 좌표
 
 
+def test_typing_into_the_length_field_works_without_the_helper(qapp):
+    """사용자는 set_length()를 부르지 않는다. 스핀박스에 직접 입력한다.
+
+    헬퍼를 통해서만 테스트하면 실제 폼이 동작하지 않아도 전부 통과한다.
+    이 프로젝트에서 같은 패턴의 버그가 이미 네 번 나왔다.
+    """
+    dialog = CalibrationDialog(databar_image(), databar_top=884)
+    dialog._length.setValue(1.0)
+    dialog._unit.setCurrentText("µm")
+    dialog._confirm.setChecked(True)
+    scale = dialog.scale_info()
+    assert scale is not None
+    assert scale.nm_per_px == pytest.approx(10.0, rel=0.05)
+    assert scale.source == "scalebar_auto"
+
+
 def test_manual_pixel_distance_needs_no_confirmation(qapp):
     """사람이 직접 잰 거리는 이미 눈으로 확인한 값이다."""
     dialog = CalibrationDialog(databar_image(), databar_top=884)
