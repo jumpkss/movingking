@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from ebl_gap.stats import mark_outliers, representative_line, summarize
@@ -82,6 +83,33 @@ def test_mark_outliers_does_nothing_when_most_values_tie():
     assert all(m.status == "valid" for m in marked)
 
 
+def test_mark_outliers_uses_the_mad_when_it_exceeds_the_resolution():
+    """산포가 분해능보다 클 때 척도는 MAD다. 분해능만 쓰면 정상 라인을 버린다.
+
+    `max(MAD, 분해능)`의 MAD 쪽이 하는 일이 이것이다. 잡음 있는 실측 이미지
+    — 300줄이 40 +- 6 nm이고 참 이상치는 하나도 없는 — 에서 3.0 nm/px 분해능만
+    척도로 쓰면 한계가 3.5 x 3.0 = 10.5 nm로 내려앉아 1.75 sigma 바깥이 전부
+    이상치가 된다. 24줄이 잘려 나가고, 그중 18줄은 이 이미지의 산포 안에 있는
+    멀쩡한 라인이다. 평균에서 조용히 빠지므로 사용자는 알 방법이 없다.
+    MAD(4.15 nm)를 쓰면 한계가 14.5 nm가 되어 6줄만 남는다.
+
+    분해능만 쓰는 변이가 잡히지 않던 자리다 — 기존 테스트는 전부 MAD가 0인
+    깨끗한 값 묶음이라 max()의 반대쪽만 밟고 있었다.
+    """
+    widths = np.random.default_rng(0).normal(40.0, 6.0, 300)
+    median_nm = float(np.median(widths))
+    mad_nm = float(np.median(np.abs(widths - median_nm)))
+    # 이 전제가 깨지면 테스트가 max()의 다른 쪽을 밟게 되어 뜻을 잃는다.
+    assert mad_nm > 3.0, f"MAD {mad_nm:.2f}nm가 분해능 3.0nm보다 커야 한다"
+
+    marked = mark_outliers(valid_lines(widths), resolution_nm=3.0)
+
+    n_outlier = sum(1 for ln in marked if ln.status == "outlier")
+    assert n_outlier == 6, (
+        f"{n_outlier}/300이 이상치로 잘렸다 — 분해능(3.0nm)만 척도로 쓰면 "
+        f"24/300이 된다. MAD {mad_nm:.2f}nm를 써야 6/300이다")
+
+
 def test_mark_outliers_ignores_non_valid_lines():
     lines = valid_lines([50.0] * 10) + [line(10, 999.0, status="no_edge")]
     marked = mark_outliers(lines)
@@ -92,6 +120,25 @@ def test_short_ratio_at_or_above_five_percent_warns():
     lines = valid_lines([50.0] * 19) + [line(19, None, status="short")]
     result = summarize(lines, scale=SCALE, angle_deg=0.0)
     assert any("short" in w for w in result.warnings)
+
+
+def test_short_ratio_denominator_counts_uncertain_lines_too():
+    """분모는 valid + short + uncertain이다. 경계에서 확인한다.
+
+    5/(95+5+1) = 4.95% -> 임계 5% 미만이라 경고 없음.
+    분모에서 uncertain을 빼면 5/100 = 5.00%로 임계에 닿아 경고가 뜬다.
+    판정보류 라인도 그 ROI에서 실제로 측정을 시도한 라인이므로, 빼면 short
+    비율이 부풀려져 멀쩡한 dose에 "short 발생 구간 있음"이 붙는다. 사용자가
+    결과 패널에서 읽는 것이 이 문장이고, 이 문장을 보고 dose를 버린다.
+    """
+    lines = (valid_lines([50.0] * 95)
+             + [line(95 + i, None, status="short") for i in range(5)]
+             + [line(100, None, status="no_edge")])
+    result = summarize(lines, scale=SCALE, angle_deg=0.0)
+    assert result.n_valid == 95 and result.n_short == 5 and result.n_uncertain == 1
+    assert not any("short" in w for w in result.warnings)
+    # 다른 경고도 없어야 이 단언이 short 경고만 보고 있다는 뜻이 된다.
+    assert result.warnings == ()
 
 
 def test_uncertain_ratio_at_or_above_twenty_percent_warns():

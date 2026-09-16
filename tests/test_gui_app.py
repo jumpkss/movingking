@@ -4,33 +4,56 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import tifffile
+from PIL import Image
 
 pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
 from ebl_gap.types import Roi  # noqa: E402
+from ebl_gap_gui.calibration import CalibrationDialog  # noqa: E402
 from ebl_gap_gui.app import MainWindow  # noqa: E402
 from tests.synth import synth_gap_image  # noqa: E402
 from tests.test_metadata import FEI_INI  # noqa: E402
 
 
+def _fei_ini():
+    """512x512, 정확히 3.0 nm/px인 FEI 메타데이터 블록.
+
+    합성 이미지가 3.0 nm/px이므로 메타데이터도 정확히 맞춘다. 어긋나면 측정값에
+    계통 오차가 생겨 테스트가 무엇을 재는지 흐려진다.
+    """
+    return (FEI_INI
+            .replace("ResolutionX=1024", "ResolutionX=512")
+            .replace("ResolutionY=884", "ResolutionY=512")
+            .replace("PixelWidth=3.0517578125e-009", "PixelWidth=3.0e-009")
+            .replace("PixelHeight=3.0517578125e-009", "PixelHeight=3.0e-009")
+            .replace("HorFieldsize=3.125e-006", "HorFieldsize=1.536e-006"))
+
+
+def _write_tif(path, dose, data):
+    out = path / f"pattern_{dose:g}uC.tif"
+    tifffile.imwrite(out, data, extratags=[(34682, 's', 0, _fei_ini(), True)])
+    return out
+
+
 def write_sample(path, gap_nm, dose):
     """3 nm/px 메타데이터가 붙은 512x512 합성 SEM TIFF를 만든다."""
-    # 합성 이미지가 3.0 nm/px이므로 메타데이터도 정확히 3.0 nm/px로 맞춘다.
-    # 어긋나면 측정값에 계통 오차가 생겨 테스트가 무엇을 재는지 흐려진다.
-    ini = (FEI_INI
-           .replace("ResolutionX=1024", "ResolutionX=512")
-           .replace("ResolutionY=884", "ResolutionY=512")
-           .replace("PixelWidth=3.0517578125e-009", "PixelWidth=3.0e-009")
-           .replace("PixelHeight=3.0517578125e-009", "PixelHeight=3.0e-009")
-           .replace("HorFieldsize=3.125e-006", "HorFieldsize=1.536e-006"))
     img = synth_gap_image(width=512, height=512, gap_nm=gap_nm, nm_per_px=3.0,
                           angle_deg=2.0, edge_sigma_px=1.2, noise_sigma=3.0,
                           seed=int(dose))
-    data = np.clip(img, 0, 255).astype(np.uint8)
-    out = path / f"pattern_{dose:g}uC.tif"
-    tifffile.imwrite(out, data, extratags=[(34682, 's', 0, ini, True)])
-    return out
+    return _write_tif(path, dose, np.clip(img, 0, 255).astype(np.uint8))
+
+
+def write_closed_sample(path, dose, noise_sigma=3.0):
+    """갭이 완전히 닫힌 이미지 — 평탄한 금속과 잡음뿐이다.
+
+    `gap_nm=0`으로 만든 합성 이미지에는 아직 좁은 골이 남아 `sub_resolution`으로
+    판정된다. 실제로 닫힌 패턴은 대비 자체가 없어서 `short`가 되므로, 그 상태를
+    만들려면 골 없는 평탄한 금속이어야 한다.
+    """
+    rng = np.random.default_rng(int(dose))
+    data = np.clip(200.0 + rng.normal(0.0, noise_sigma, (512, 512)), 0, 255)
+    return _write_tif(path, dose, data.astype(np.uint8))
 
 
 @pytest.fixture()
@@ -603,3 +626,135 @@ def test_opening_another_folder_does_not_resurrect_old_profiles(qapp, folder,
     assert window.image_view.current_roi() != moved
     assert window._profiles_by_index == {}
     assert window._measured_rois == {}
+
+
+def test_exporting_after_moving_the_roi_does_not_draw_stale_edges(qapp, folder,
+                                                                  tmp_path):
+    """ROI를 옮긴 뒤 내보낸 PNG에 옛 에지가 그려지면 안 된다.
+
+    화면은 이미 비워진다. 그런데 파일로 나가는 그림이 현재 ROI에 과거 결과를
+    겹쳐 그리면, 실험 노트에 들어가는 것은 아무 에지도 없는 자리에 에지가
+    찍힌 사진이다. 화면보다 이쪽이 더 오래 남는다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    window.image_view._roi.setPos([60, 60])
+
+    out = tmp_path / "overlay.png"
+    window.export_overlay(str(out))
+
+    assert out.exists() is False
+    assert "측정" in window.status_text()
+
+
+def test_exporting_right_after_measuring_still_works(qapp, folder, tmp_path):
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    out = tmp_path / "overlay.png"
+    window.export_overlay(str(out))
+    assert out.exists() and out.stat().st_size > 0
+
+
+def test_recalibrating_after_measuring_does_not_rewrite_the_csv_scale(
+        qapp, folder, tmp_path, monkeypatch):
+    """측정 -> 재캘리브레이션 -> 요약 CSV. 행에는 측정에 쓴 스케일이 남는다.
+
+    `calibrate_current`는 `record.scale`만 갈아 끼우고 `result.scale`은 그대로
+    둔다 — mean_nm을 만든 스케일이 그쪽이기 때문이다. CSV가 record 쪽을 읽으면
+    한 행 안의 mean_nm과 nm_per_px가 서로 다른 스케일을 가리켜, 그 행으로는
+    아무것도 재현할 수 없다. 사용자가 실제로 밟는 순서로 확인한다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.measure_current()
+    assert window.session.records[0].roi_results[0].scale.source == "fei_metadata"
+
+    class AcceptingDialog(CalibrationDialog):
+        """실제 다이얼로그. 모달로 멈추는 exec만 대신한다 — 값은 위젯에 넣는다."""
+
+        def exec(self):
+            self.set_length(1.0, "µm")
+            self.set_manual_pixels(200.0)   # 1000 nm / 200 px = 5.0 nm/px
+            return CalibrationDialog.Accepted
+
+    monkeypatch.setattr("ebl_gap_gui.app.CalibrationDialog", AcceptingDialog)
+    window.calibrate_current()
+
+    record = window.session.records[0]
+    assert record.scale.nm_per_px == pytest.approx(5.0)
+    assert record.scale.source == "manual"
+    assert record.roi_results[0].scale.nm_per_px == pytest.approx(3.0)
+
+    out = tmp_path / "summary.csv"
+    window.export_summary_csv(out)
+    measured = [row for row in csv.DictReader(out.open(encoding="utf-8-sig"))
+                if row["mean_nm"]]
+    assert len(measured) == 1
+    assert float(measured[0]["nm_per_px"]) == pytest.approx(3.0)
+    assert measured[0]["scale_source"] == "fei_metadata"
+
+
+def test_a_dose_whose_gap_closed_stays_on_the_curve_and_in_the_report(qapp,
+                                                                      tmp_path):
+    """갭이 닫힌 dose가 곡선과 리포트에 남는다. 사용자가 밟는 경로 전체로 확인한다.
+
+    "이 dose에서 갭이 닫힌다"가 dose test의 답이다. 그 dose는 측정값이 없어
+    곡선에서 통째로 빠져 있었다 — 표와 CSV에는 있지만 사용자가 dose를 고르는
+    곳은 곡선이다.
+    """
+    write_sample(tmp_path, gap_nm=90.0, dose=300)
+    write_closed_sample(tmp_path, dose=400)
+
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    for index in (0, 1):
+        window.select_image(index)
+        window.measure_current()
+
+    closed_result = window.session.records[1].roi_results[0]
+    assert closed_result.mean_nm is None, "픽스처가 실제로 닫혀야 뜻이 있다"
+    assert closed_result.n_short > closed_result.n_uncertain
+
+    assert window.dose_plot.point_count() == 1          # 300 uC만 측정됨
+    assert window.dose_plot.closed_dose_marks() == [(400.0, 0.0)]
+
+    out = tmp_path / "report.txt"
+    window.export_report(out)
+    block = out.read_text(encoding="utf-8").split("dose - 갭 관계")[1]
+    assert "400.0 uC" in block and "전 구간 short" in block
+
+
+def test_opening_a_png_folder_says_what_to_do_instead_of_a_tiff_error(qapp,
+                                                                      tmp_path):
+    """PNG 크롭 폴더에서 상태 표시줄과 파일 목록이 다음 행동을 말해 준다.
+
+    예전에는 `오류: 메타데이터를 읽지 못했다: not a TIFF file: header=b'\\x89PNG'`가
+    떴다. 파일 목록 칸은 20자로 잘리므로 거기 남는 것이 `not `쯤이었다. 파일은
+    멀쩡하고 올바른 다음 행동은 스케일 캘리브레이션인데, 화면 어디에도 그 말이
+    없었다.
+    """
+    Image.fromarray(np.full((256, 256), 200, dtype=np.uint8)).save(
+        tmp_path / "crop_300uC.png")
+
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    window.select_image(0)
+
+    assert "스케일" in window.status_text()
+    assert "TIFF" not in window.file_panel.status_text(0), \
+        "잘린 목록 칸에 영문 라이브러리 메시지가 남았다"
+    assert "스케일" in window.file_panel.status_text(0)
+
+
+def test_exporting_an_overlay_with_nothing_open_says_so(qapp, tmp_path):
+    """선택된 이미지가 없을 때 조용히 아무 일도 안 하면 안 된다.
+
+    툴바의 "오버레이 PNG"는 파일 대화상자까지 띄우고 저장을 누르게 해 놓고
+    아무것도 쓰지 않았다. 사용자는 저장된 줄 안다.
+    """
+    window = MainWindow()
+    window.export_overlay(tmp_path / "overlay.png")
+    assert (tmp_path / "overlay.png").exists() is False
+    assert window.status_text() != ""

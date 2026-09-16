@@ -22,6 +22,14 @@ from ebl_gap.types import ImageRecord
 
 TIFF_SUFFIXES = {".tif", ".tiff"}
 
+#: 스케일을 확정하지 못한 모든 경로가 붙이는 안내.
+#: 하부 예외의 영문(tifffile의 "not a TIFF file: header=b'\x89PNG'" 등)만 보이면
+#: PNG 크롭 폴더를 여는 사람은 "내 파일이 깨졌다"로 읽고 멈춘다. 파일은 멀쩡하고
+#: 올바른 다음 행동은 스케일 캘리브레이션이다. 원문 예외는 진단에 필요하므로
+#: 버리지 않고 이 문장 뒤에 괄호로 남긴다.
+NO_SCALE_HINT = ("스케일 메타데이터가 없습니다 — 스케일 캘리브레이션으로 "
+                 "직접 지정하세요")
+
 
 def _read_pixels(path: Path) -> np.ndarray:
     if path.suffix.lower() in TIFF_SUFFIXES:
@@ -73,7 +81,7 @@ def load_image(path: str | Path, *,
         record.error = str(exc)
         return LoadedImage(record=record, pixels=pixels, databar_top=None)
     except Exception as exc:
-        record.error = f"메타데이터를 읽지 못했다: {exc}"
+        record.error = f"{NO_SCALE_HINT} (메타데이터를 읽지 못했다: {exc})"
         return LoadedImage(record=record, pixels=pixels, databar_top=None)
 
     # 아래 두 호출도 각각 감싼다. 둘 다 "TIFF는 읽히고 FEI 태그도 파싱되는데
@@ -93,11 +101,11 @@ def load_image(path: str | Path, *,
     try:
         scale, warnings = scale_from_metadata(meta, pixels.shape[1])
     except MetadataNotFoundError as exc:
-        notes.append(str(exc))
+        notes.append(f"{NO_SCALE_HINT} ({exc})")
         record.error = " | ".join(notes)
         return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
     except Exception as exc:
-        notes.append(f"스케일을 계산하지 못했다: {exc}")
+        notes.append(f"{NO_SCALE_HINT} (스케일을 계산하지 못했다: {exc})")
         record.error = " | ".join(notes)
         return LoadedImage(record=record, pixels=pixels, databar_top=databar_top)
 

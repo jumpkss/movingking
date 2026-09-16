@@ -13,7 +13,7 @@ from ebl_gap.export import (
     write_summary_csv,
 )
 from ebl_gap.measure import measure_roi
-from ebl_gap.types import ImageRecord, Roi, ScaleInfo
+from ebl_gap.types import ImageRecord, Roi, RoiResult, ScaleInfo
 from tests.synth import synth_gap_image
 
 ROI = Roi(106, 106, 405, 405)
@@ -46,6 +46,28 @@ def test_summary_csv_has_one_row_per_roi_with_scale_provenance(tmp_path):
     # 0.001 nm는 이미 물리적 의미보다 두 자릿수 이상 세밀하다.
     assert float(row["mean_nm"]) == pytest.approx(result.mean_nm, abs=5e-4)
     assert int(row["n_valid"]) == result.n_valid
+
+
+def test_summary_csv_reports_the_scale_the_measurement_actually_used(tmp_path):
+    """측정 뒤 캘리브레이션을 다시 해도 CSV는 그 숫자를 만든 스케일을 쓴다.
+
+    `record.scale`은 "이 이미지의 현재 스케일"이고 `result.scale`은 "이 mean_nm을
+    계산할 때 쓴 스케일"이다. 측정 -> 재캘리브레이션 순서로 가면 둘이 실제로
+    갈라진다. 그때 record 쪽을 쓰면 CSV 한 행 안에서 mean_nm과 nm_per_px가 서로
+    다른 스케일을 가리켜, 나중에 그 행으로 계산을 재현할 수 없게 된다. 출처를
+    값과 함께 들고 다니는 것이 `ScaleInfo`의 존재 이유다.
+    """
+    session, _, result = measured_session(tmp_path)
+    recalibrated = ScaleInfo(nm_per_px=5.0, source="manual")
+    session.records[0].scale = recalibrated   # 측정 뒤 사용자가 다시 잡았다
+    assert result.scale != recalibrated       # 둘이 갈라져야 검사에 뜻이 있다
+
+    out = tmp_path / "summary.csv"
+    write_summary_csv(out, session)
+
+    row = list(csv.DictReader(out.open(encoding="utf-8-sig")))[0]
+    assert float(row["nm_per_px"]) == pytest.approx(3.0)
+    assert row["scale_source"] == "fei_metadata"
 
 
 def test_summary_csv_writes_empty_cells_for_unmeasured_images(tmp_path):
@@ -147,3 +169,55 @@ def test_report_surfaces_warnings(tmp_path):
     # 리포트에 올라왔는지를 본다.
     assert result.n_short > 0
     assert "short 발생 구간 있음" in text
+
+
+def closed_record(path, dose, n_short=300, n_uncertain=0):
+    """갭이 전 구간에서 닫힌 이미지 레코드."""
+    return ImageRecord(path=path, scale=SCALE, dose=dose, roi_results=[
+        RoiResult(mean_nm=None, std_nm=None, n_valid=0, n_short=n_short,
+                  n_uncertain=n_uncertain, n_low_confidence=0, angle_deg=0.0,
+                  lines=(), warnings=(), scale=SCALE)])
+
+
+def test_report_lists_a_closed_dose_in_the_dose_curve_block(tmp_path):
+    """갭이 닫힌 dose가 dose-갭 블록에 dose 순서대로 들어간다.
+
+    그 블록이 "어느 dose에서 갭이 닫히는가"를 읽는 자리다. 닫힌 dose가 빠지면
+    리포트는 측정된 폭만 나열하고 답은 말하지 않는다.
+    """
+    session, _, _ = measured_session(tmp_path)          # 320 uC, 측정됨
+    session.add(closed_record(tmp_path / "pattern_400uC.tif", 400.0))
+
+    block = format_report(session).split("dose - 갭 관계")[1]
+
+    lines = [ln for ln in block.splitlines() if "uC" in ln]
+    assert len(lines) == 2
+    assert "320.0 uC" in lines[0] and "nm" in lines[0]
+    assert "400.0 uC" in lines[1]
+    assert "전 구간 short" in lines[1]
+    assert "300" in lines[1]
+
+
+def test_report_shows_the_dose_block_when_every_dose_is_closed(tmp_path):
+    """전 구간이 닫힌 시리즈에서도 블록이 나와야 한다.
+
+    측정된 점이 하나도 없으면 블록을 통째로 빼던 자리다. 그러면 리포트가
+    "dose 관계 없음"처럼 읽히는데, 실제로는 모든 dose에서 갭이 닫힌 것이다.
+    """
+    session = Session()
+    session.add(closed_record(tmp_path / "pattern_400uC.tif", 400.0))
+    session.add(closed_record(tmp_path / "pattern_500uC.tif", 500.0))
+
+    text = format_report(session)
+
+    assert "dose - 갭 관계" in text
+    block = text.split("dose - 갭 관계")[1]
+    assert block.count("전 구간 short") == 2
+
+
+def test_report_does_not_call_an_unmeasurable_roi_a_closed_dose(tmp_path):
+    """판정보류뿐인 이미지는 "닫혔다"가 아니라 "못 쟀다"이다."""
+    session = Session()
+    session.add(closed_record(tmp_path / "pattern_400uC.tif", 400.0,
+                              n_short=0, n_uncertain=300))
+    assert "전 구간 short" not in format_report(session)

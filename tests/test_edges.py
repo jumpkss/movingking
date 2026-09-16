@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from scipy.special import erf
 
+from ebl_gap.classify import classify_line
 from ebl_gap.edges import ProfileAnalysis, analyze_profile
 
 
@@ -73,6 +74,74 @@ def test_hysteresis_suppresses_noise_induced_extra_crossings():
     a = analyze_profile(p)
     assert a.n_cross_left == 1
     assert a.n_cross_right == 1
+
+
+def haloed_profile(n=200, gap_px=20.0, sigma=2.0, halo=80.0):
+    """에지 바깥에 넓은 edge-brightening 어깨가 붙은 프로파일.
+
+    전극 밝기 200, 갭 바닥 40, 참 폭 20px. 어깨(+80)는 에지에서 2 sigma 바깥부터
+    프로파일 양 끝 21픽셀 앞까지 덮는다. 그래서 끝에서 20% 창(k=40)은 깨끗한
+    금속 21개와 어깨 19개를 담아 중앙값이 200으로 남고, 21%(k=42)부터는 어깨가
+    과반이 되어 중앙값이 어깨 밝기로 끌려간다. 경계를 20% 바로 위에 올려 둔
+    구성이다.
+    """
+    x = np.arange(n, dtype=float)
+    d = np.abs(x - (n - 1) / 2.0)
+    t = 0.5 * (erf((d - gap_px / 2.0) / (np.sqrt(2.0) * sigma)) + 1.0)
+    p = 40.0 + 160.0 * t
+    shoulder = (d >= gap_px / 2.0 + 2.0 * sigma) & (d <= 78.5)
+    return p + halo * shoulder
+
+
+def test_flat_window_stays_off_the_edge_brightening_shoulder():
+    """평탄부 창은 전극 밝기만 담아야 한다 — 어깨가 섞이면 문턱이 통째로 틀어진다.
+
+    창이 20%를 넘으면 중앙값이 어깨 밝기(280)로 끌려가 문턱이 120에서 160으로
+    올라가고, 참 폭 20px가 22.7px로 나온다. 13% 계통 오차이고 방향이 일정해서
+    반복 측정으로도 드러나지 않는다. edge-brightening은 SEM에서 늘 있는 현상이라
+    이 오차는 실측에서 상시 켜진다.
+    """
+    a = analyze_profile(haloed_profile())
+    assert a.i_hi_left == pytest.approx(200.0), (
+        f"평탄부 창이 밝은 어깨를 물었다 (i_hi_left {a.i_hi_left:.1f}, 전극은 200)")
+    assert a.width_px == pytest.approx(20.0, abs=0.2)
+
+
+def test_flat_window_is_wide_enough_to_outvote_bright_specks():
+    """창이 너무 좁으면 프로파일 끝의 밝은 점 몇 개가 전극 밝기를 대신한다.
+
+    위 검사만 있으면 창을 얼마든지 좁혀도 통과한다. ROI 가장자리의 밝은 티끌은
+    SEM 실측에서 흔하고, 11개가 창을 장악하면 i_hi가 400으로 잡혀 문턱이 전극
+    밝기보다 높아진다. 그러면 에지를 티끌에서 찾아 폭 20px가 177px이 된다.
+    10% 창(k=20)은 티끌에 넘어가고 20% 창(k=40)은 버틴다.
+    """
+    p = erf_profile(n=200, gap_px=20.0, sigma=2.0)
+    p[:11] = 400.0
+    p[-11:] = 400.0
+
+    a = analyze_profile(p)
+
+    assert a.i_hi_left == pytest.approx(200.0), (
+        f"밝은 티끌 11개가 평탄부 중앙값을 장악했다 (i_hi_left {a.i_hi_left:.1f})")
+    assert a.width_px == pytest.approx(20.0, abs=0.2)
+
+
+def test_hysteresis_keeps_a_noisy_line_from_being_called_multi_edge():
+    """잡음이 문턱을 다시 넘는 것을 다중 패턴으로 오판하면 안 된다.
+
+    기존 잡음 검사(noise=6)는 히스테리시스를 0으로 둬도 통과한다 — 잡음이 문턱
+    근처까지 오지 않기 때문이다. 대비 160에 sigma 20인 저선량 스캔에서야
+    가짜 교차가 실제로 세어진다. 그때 `classify_line`이 이 멀쩡한 라인을
+    multi_edge로 돌려보내고, 그 라인은 통계에서 빠진 채 "ROI에 다른 패턴이
+    포함된 것으로 보임"이라는 틀린 이유를 달고 사용자에게 보고된다.
+    """
+    p = erf_profile(n=301, gap_px=20.0, sigma=2.0, noise=20.0, seed=6)
+    a = analyze_profile(p)
+
+    assert (a.n_cross_left, a.n_cross_right) == (1, 1), (
+        f"가짜 교차가 세어졌다 (좌 {a.n_cross_left}, 우 {a.n_cross_right})")
+    status, _, reason = classify_line(a)
+    assert status == "valid", f"멀쩡한 라인이 {status}로 판정됐다: {reason}"
 
 
 def test_two_gaps_in_one_profile_are_reported_as_multiple_crossings():

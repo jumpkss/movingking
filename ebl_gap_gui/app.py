@@ -428,11 +428,20 @@ class MainWindow(QMainWindow):
 
     def export_overlay(self, path: str | Path) -> None:
         if self._current is None:
+            self._set_status("내보낼 이미지가 없습니다")
             return
         record = self.session.records[self._current]
-        roi = self.image_view.current_roi()
-        if not record.roi_results or roi is None:
+        if not record.roi_results:
             self._set_status("먼저 측정하세요")
+            return
+        # 화면에 있는 ROI가 아니라 *측정에 쓰인* ROI로 그린다. 둘은 사용자가
+        # ROI를 옮기는 순간 갈라지는데, roi_changed는 roi_results를 지우지 않으므로
+        # 지금의 ROI에 그때의 결과를 겹쳐 그리면 평탄한 금속 위에 에지가 찍힌
+        # 사진이 파일로 나간다. 화면 오버레이는 지워지지만 이 PNG는 실험 노트에
+        # 남아 더 오래 간다. select_image가 쓰는 것과 같은 출처를 쓴다.
+        roi = self._measured_rois.get(self._current)
+        if roi is None:
+            self._set_status("ROI가 측정 위치에서 벗어났습니다 — 다시 측정하세요")
             return
         write_overlay_png(path, self._pixels[self._current], roi,
                           record.roi_results[0])

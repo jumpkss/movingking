@@ -189,13 +189,22 @@ def format_report(session: Session) -> str:
         lines.append("")
 
     curve = session.dose_curve()
-    if curve:
+    closed = session.closed_doses()
+    if curve or closed:
         lines.append("dose - 갭 관계")
         lines.append("-" * 40)
+        # 측정된 점과 갭이 닫힌 dose를 dose 순서로 한 줄씩 섞어 낸다. 닫힌 dose를
+        # 빼면 "어느 dose에서 갭이 닫히는가"라는 dose test의 답이 리포트에서
+        # 사라진다. 갭 폭 자리에 0을 쓰지 않는다 — 재지 않은 값이기 때문이다.
+        rows: list[tuple[float, str]] = []
         for point in curve:
             spread = "" if point.std_nm is None else f" +- {point.std_nm:.2f}"
-            lines.append(
-                f"  {point.dose:>8.1f} uC : {point.mean_nm:7.2f}{spread} nm "
-                f"(유효 {point.n_valid}, short {point.n_short})"
-            )
+            rows.append((point.dose,
+                         f"  {point.dose:>8.1f} uC : {point.mean_nm:7.2f}{spread} nm "
+                         f"(유효 {point.n_valid}, short {point.n_short})"))
+        for dose_point in closed:
+            rows.append((dose_point.dose,
+                         f"  {dose_point.dose:>8.1f} uC : 전 구간 short "
+                         f"({dose_point.n_short}/{dose_point.n_total} 라인)"))
+        lines.extend(text for _, text in sorted(rows, key=lambda r: r[0]))
     return "\n".join(lines)

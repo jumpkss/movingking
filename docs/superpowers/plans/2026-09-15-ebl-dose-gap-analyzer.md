@@ -7153,7 +7153,7 @@ roi_results 남아 있나: True
 내보내기 경로는 빠졌다. `test_export_overlay_writes_a_png`는 파일이 존재하고 크기가
 0이 아닌 것만 본다.
 
-- [ ] **Step 1: 옮긴 뒤 내보내기를 검사하는 테스트 (RED)**
+- [x] **Step 1: 옮긴 뒤 내보내기를 검사하는 테스트 (RED)**
 
 ```python
 def test_exporting_after_moving_the_roi_does_not_draw_stale_edges(qapp, folder,
@@ -7188,7 +7188,7 @@ def test_exporting_right_after_measuring_still_works(qapp, folder, tmp_path):
     assert out.exists() and out.stat().st_size > 0
 ```
 
-- [ ] **Step 2: 측정에 쓰인 ROI로 그린다 (GREEN)**
+- [x] **Step 2: 측정에 쓰인 ROI로 그린다 (GREEN)**
 
 `export_overlay`가 `select_image`와 같은 출처를 쓰게 한다.
 
@@ -7207,7 +7207,7 @@ def test_exporting_right_after_measuring_still_works(qapp, folder, tmp_path):
 **생산 코드 변경 없이 테스트만** 더한다. 각 항목마다 해당 변이를 걸어 빨간 것을
 확인하고 되돌린 증거를 보고서에 붙인다.
 
-- [ ] **Step 3: short/uncertain 비율의 분모**
+- [x] **Step 3: short/uncertain 비율의 분모**
 
 `ebl_gap/stats.py`의 `n_total = n_valid + n_short + n_uncertain`. 변이(uncertain 제외)로
 305개가 통과한다. dose 곡선 쪽 분모는 Task 16에서 경계값으로 고정했는데, 사용자가
@@ -7220,23 +7220,28 @@ def test_exporting_right_after_measuring_still_works(qapp, folder, tmp_path):
 같이 고칠 것: `stats.py`는 `>= 0.05`, `dose_plot.py`는 `> 0.05`를 쓴다. 정확히 5%일 때
 패널은 경고하고 곡선은 안 한다. **`>=`로 통일**하고 그 경계를 테스트로 박는다.
 
-- [ ] **Step 4: `max(MAD, resolution)`의 MAD 쪽**
+- [x] **Step 4: `max(MAD, resolution)`의 MAD 쪽**
 
-`stats.py:43`. resolution만 쓰는 변이는 잡히는데 MAD만 쓰는 변이는 305개 통과다.
-Task 7 판정이 "둘 중 하나만 쓰면 반쪽이 된다"고 명시했는데 반쪽이 안 지켜져 있다.
+`stats.py:43`. Task 7 판정이 "둘 중 하나만 쓰면 반쪽이 된다"고 명시했는데
+반쪽이 안 지켜져 있다.
+
+> **수정(Task 23 구현 중 실측):** 위 문장의 두 변이가 뒤바뀌어 있었다. 실제로는
+> `scale_nm = mad` 변이가 **잡히고**(6 failed) `scale_nm = float(resolution_nm)`
+> 변이가 **살아남는다**(309 passed). 아래 처방한 테스트 구성은 살아남는 쪽을
+> 정확히 잡으므로 그대로 두었고, 숫자도 그대로 재현됐다.
 
 300줄이 40 ± 6 nm이고 참 이상치가 없는 잡음 이미지에서, 현재 규칙은 6/300을
 이상치로 보고 resolution만 쓰면 24/300을 버린다. 정상 라인 18개가 조용히 평균에서
 빠진다. 그 상황을 테스트로 만든다(MAD가 resolution보다 크게).
 
-- [ ] **Step 5: 요약 CSV가 `result.scale`을 쓴다는 것**
+- [x] **Step 5: 요약 CSV가 `result.scale`을 쓴다는 것**
 
 `export.py:66-67`. `record.scale`을 쓰는 변이가 305개 통과한다. 측정 뒤
 캘리브레이션을 다시 하면 둘이 실제로 갈라진다(`record` 5.0 manual vs `result`
 3.05 fei_metadata). 지금 코드가 옳은 쪽(그 숫자를 실제로 계산한 스케일)을 쓰는데
 아무도 안 지킨다. 측정 -> 재캘리브레이션 -> CSV 순서의 테스트를 쓴다.
 
-- [ ] **Step 6: 스펙이 정한 상수 셋**
+- [x] **Step 6: 스펙이 정한 상수 셋**
 
 전부 변이가 안 잡힌다.
 
@@ -7253,7 +7258,7 @@ Task 7 판정이 "둘 중 하나만 쓰면 반쪽이 된다"고 명시했는데 
 있지만 **dose를 고르는 곳은 곡선이다.** 리뷰어 실측: 5장 중 280 uC가 전 구간 short인
 시리즈에서 곡선 점 4개, short 표시 0개.
 
-- [ ] **Step 7: 닫힌 dose를 곡선에 남긴다**
+- [x] **Step 7: 닫힌 dose를 곡선에 남긴다**
 
 `dose_curve()`가 그런 레코드를 `mean_nm=0.0`, `all_short=True`로 돌려주게 하거나
 (반환 구조를 바꾸면 소비자가 여럿이니 주의) 별도 목록으로 돌려준다. `DosePlot`은
@@ -7263,7 +7268,7 @@ Task 7 판정이 "둘 중 하나만 쓰면 반쪽이 된다"고 명시했는데 
 **이것이 이 도구의 결론이 되는 화면이다.** "이 dose에서 갭이 닫힌다"는 것이
 dose test의 답이므로, 그 점이 빠진 곡선은 답의 절반을 지운 것이다.
 
-- [ ] **Step 8: 읽기 실패 메시지를 사용자 언어로**
+- [x] **Step 8: 읽기 실패 메시지를 사용자 언어로**
 
 `loader.py`가 하부 예외의 영문을 그대로 끼워 넣어 파일 목록과 상태 표시줄에
 `오류: 메타데이터를 읽지 못했다: not a TIFF file: header=b'\x89PNG'`가 뜬다. PNG
@@ -7277,7 +7282,7 @@ dose test의 답이므로, 그 점이 빠진 곡선은 답의 절반을 지운 �
 
 원문 예외는 진단에 필요하니 버리지 말고 뒤에 괄호로 남긴다.
 
-- [ ] **Step 9: 전체 테스트와 커밋**
+- [x] **Step 9: 전체 테스트와 커밋**
 
 Run: `QT_QPA_PLATFORM=offscreen python -m pytest -q`
 Run: `grep -rE "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`

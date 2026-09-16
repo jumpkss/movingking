@@ -109,3 +109,38 @@ def test_unreadable_file_produces_a_record_with_an_error(tmp_path):
     loaded = load_image(path)
     assert loaded.record.error is not None
     assert loaded.pixels.size == 0
+
+
+def test_a_png_gets_korean_guidance_instead_of_a_tiff_library_message(tmp_path):
+    """PNG 크롭 폴더를 여는 사람에게 다음 행동을 한국어로 말해 준다.
+
+    지금은 `메타데이터를 읽지 못했다: not a TIFF file: header=b'\\x89PNG'`가
+    파일 목록과 상태 표시줄에 그대로 뜬다. 이것을 읽는 학생은 "내 파일이
+    깨졌다"로 해석하고 멈추는데, 파일은 멀쩡하고 올바른 다음 행동은 스케일
+    캘리브레이션이다. 원문 예외는 진단에 필요하니 버리지 않고 뒤에 남긴다.
+    """
+    path = tmp_path / "crop_300uC.png"
+    Image.fromarray(np.full((32, 48), 200, dtype=np.uint8)).save(path)
+
+    error = load_image(path).record.error
+
+    assert error.startswith("스케일 메타데이터가 없습니다")
+    assert "스케일 캘리브레이션" in error
+    assert "TIFF" in error, f"진단용 원문이 사라졌다: {error}"
+
+
+def test_an_unusable_pixel_width_also_gets_the_calibration_guidance(tmp_path):
+    """스케일을 못 만드는 다른 경로에서도 같은 안내가 나와야 한다.
+
+    PNG 경로만 고치면 FEI 태그는 있는데 값이 망가진 파일에서 다시 영문 예외만
+    남는다. 사용자 입장에서는 둘 다 "스케일을 모른다"라는 같은 상황이다.
+    """
+    ini = FEI_INI.replace("PixelWidth=3.0517578125e-009", "PixelWidth=nan")
+    path = tmp_path / "nan_300uC.tif"
+    tifffile.imwrite(path, np.zeros((943, 1024), dtype=np.uint8),
+                     extratags=[(34682, 's', 0, ini, True)])
+
+    error = load_image(path).record.error
+
+    assert "스케일 메타데이터가 없습니다" in error
+    assert "스케일 캘리브레이션" in error

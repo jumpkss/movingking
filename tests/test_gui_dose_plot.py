@@ -91,3 +91,77 @@ def test_shorted_doses_are_marked_separately(qapp):
     plot.set_session(session)
     assert plot.point_count() == 2
     assert plot.shorted_point_count() == 1
+
+
+def test_exactly_five_percent_short_is_marked(qapp):
+    """정확히 5%면 곡선도 표시한다 — 결과 패널과 같은 경계를 쓴다.
+
+    `stats.py`는 `>= 0.05`에서 "short 발생 구간 있음"을 띄우는데 여기가 `> 0.05`면,
+    딱 5%인 dose에서 패널은 경고하고 곡선에는 아무 표시가 없다. 사용자는 dose를
+    곡선에서 고르므로, 두 화면이 다른 답을 주는 그 한 점이 정확히 판단이 갈리는
+    자리다. 50/(950+50) = 0.05로 경계 위에 정확히 올려 둔다.
+    """
+    session = Session()
+    session.add(ImageRecord(path=Path("a.tif"), scale=SCALE, dose=300.0,
+                            roi_results=[result(80.0, n_valid=950, n_short=50)]))
+    plot = DosePlot()
+    plot.set_session(session)
+    assert plot.point_count() == 1
+    assert plot.shorted_point_count() == 1
+
+
+def closed(dose, n_short=300):
+    """갭이 전 구간에서 닫힌 이미지 레코드."""
+    return ImageRecord(path=Path(f"{dose:g}uC.tif"), scale=SCALE, dose=dose,
+                       roi_results=[result(None, std_nm=None, n_valid=0,
+                                           n_short=n_short)])
+
+
+def test_a_closed_dose_is_drawn_at_zero_gap(qapp):
+    """갭이 닫힌 dose는 갭 0 자리에 빨간 X로 찍힌다.
+
+    이것이 이 도구의 결론이 되는 화면이다. "이 dose에서 갭이 닫힌다"가 dose
+    test의 답이므로, 그 점이 빠진 곡선은 답의 절반을 지운 것이다. 표와 CSV에는
+    남아 있지만 사용자가 dose를 고르는 곳은 곡선이다.
+
+    플래그가 아니라 그려진 항목의 좌표를 읽는다 — 카운터만 올리고 그리지 않아도
+    통과하는 검사는 아무것도 지키지 못한다.
+    """
+    session = session_with((300.0, 80.0), (400.0, 50.0))
+    session.add(closed(500.0))
+
+    plot = DosePlot()
+    plot.set_session(session)
+
+    assert plot.point_count() == 2          # 측정된 점은 그대로 둘
+    assert plot.closed_dose_marks() == [(500.0, 0.0)]
+
+
+def test_a_series_where_every_dose_closes_still_draws_the_marks(qapp):
+    """측정된 점이 하나도 없어도 닫힌 dose는 그려야 한다.
+
+    측정 점이 없으면 일찍 반환하던 자리다. 전 구간이 닫힌 시리즈에서 곡선이
+    통째로 비면, 사용자는 "아직 아무것도 안 쟀다"로 읽는다.
+    """
+    session = Session()
+    session.add(closed(400.0))
+    session.add(closed(500.0))
+
+    plot = DosePlot()
+    plot.set_session(session)
+
+    assert plot.point_count() == 0
+    assert plot.closed_dose_marks() == [(400.0, 0.0), (500.0, 0.0)]
+
+
+def test_replacing_the_session_clears_the_closed_dose_marks(qapp):
+    """세션을 갈아 끼우면 이전 시리즈의 닫힘 표시가 남으면 안 된다."""
+    first = Session()
+    first.add(closed(500.0))
+    plot = DosePlot()
+    plot.set_session(first)
+    assert plot.closed_dose_marks() == [(500.0, 0.0)]
+
+    plot.set_session(session_with((300.0, 80.0)))
+
+    assert plot.closed_dose_marks() == []

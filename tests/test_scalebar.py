@@ -47,6 +47,44 @@ def test_ignores_a_run_spanning_almost_the_whole_width():
     assert detect_scalebar(img, databar_top=884) is None
 
 
+def bright_run_in_the_databar(length_px):
+    """어두운 데이터바 위에 주어진 길이의 밝은 수평 런 하나만 둔다.
+
+    `test_ignores_a_run_spanning_almost_the_whole_width`는 데이터바 전체가 균일하게
+    밝아서 `region.max() - region.min() == 0`인 조기 반환에 걸린다. 그래서 폭 가드를
+    통째로 지워도 통과한다. 여기서는 데이터바 안에 어두운 배경을 남겨 span > 0으로
+    만들어, 검사가 실제로 폭 가드까지 도달하게 한다.
+    """
+    img = np.full((943, 1024), 120.0)
+    img[884:, :] = 10.0
+    img[918:923, 0:length_px] = 250.0
+    return img
+
+
+def test_a_bright_run_wider_than_the_ratio_is_rejected():
+    """가로폭의 90%를 넘는 밝은 런은 스케일바가 아니다.
+
+    밝게 반전된 데이터바 행이 막대로 둔갑하는 것을 막는 유일한 가드다. 통과시키면
+    950px를 막대로 잡고, 사용자가 "1 um"을 입력하는 순간 nm/px가 실제의 1/9로
+    확정되어 이후 모든 갭 측정이 조용히 9배 틀어진다.
+    """
+    # 950 / 1024 = 92.8% > 90%. 값 자체를 단언하지 않는다 — 그런 단언은 상수를
+    # 다시 쓴 것일 뿐 아무 동작도 지키지 않는다. 이 검사와 아래 검사가 함께
+    # 비율을 (87.9%, 92.8%) 안으로 가둔다.
+    assert detect_scalebar(bright_run_in_the_databar(950), databar_top=884) is None
+
+
+def test_a_wide_bar_below_the_ratio_is_still_detected():
+    """가드가 진짜 막대까지 잘라내면 안 된다. 경계 바로 아래는 통과해야 한다.
+
+    위 검사만 있으면 비율을 얼마든지 낮춰도 통과한다. 900 / 1024 = 87.9%로
+    경계 바로 아래에 두어 비율을 양쪽에서 고정한다.
+    """
+    hit = detect_scalebar(bright_run_in_the_databar(900), databar_top=884)
+    assert hit is not None
+    assert hit.length_px == 900
+
+
 def test_scale_from_scalebar_divides_length_by_pixels():
     scale = scale_from_scalebar(length_px=100.0, length_nm=1000.0)
     assert scale.nm_per_px == pytest.approx(10.0)

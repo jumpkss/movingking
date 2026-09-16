@@ -38,6 +38,23 @@ class DosePoint:
     path: Path
 
 
+@dataclass(frozen=True)
+class ClosedDose:
+    """갭이 전 구간에서 닫힌 dose. 측정된 갭 폭이 없다.
+
+    `DosePoint`와 따로 두는 이유: 여기에는 잴 수 있는 갭이 없다. 같은 목록에
+    `mean_nm=0.0`으로 섞어 넣으면 평균, 기울기, 오차 막대를 계산하는 모든
+    소비자가 재지 않은 0을 측정값으로 받는다. 따로 두면 소비자는 이 목록을
+    쓰겠다고 밝혀야 하고, 빠뜨렸을 때 나오는 것은 틀린 숫자가 아니라 예전
+    화면이다.
+    """
+
+    dose: float
+    n_short: int
+    n_total: int
+    path: Path
+
+
 @dataclass
 class Session:
     """한 번의 dose test에서 다루는 이미지들."""
@@ -74,6 +91,36 @@ class Session:
                 path=record.path,
             ))
         return sorted(points, key=lambda p: p.dose)
+
+    def closed_doses(self) -> list[ClosedDose]:
+        """갭이 닫혀 측정값이 나오지 않은 dose를 dose 오름차순으로 돌려준다.
+
+        "이 dose에서 갭이 닫힌다"가 dose test의 답이므로, 곡선에서 이 점이 빠지면
+        답의 절반이 지워진다. 표와 CSV에는 남지만 사용자가 dose를 고르는 곳은
+        곡선이다.
+
+        "닫혔다"와 "못 쟀다"를 가른다. 유효 라인이 하나도 없고 short가 판정보류보다
+        많을 때만 닫힌 것으로 본다. ROI를 엉뚱한 데 놓아 전부 no_edge가 난 것까지
+        갭 0으로 찍으면, 화면이 측정하지 않은 결론을 대신 말하게 된다.
+        """
+        closed: list[ClosedDose] = []
+        for record in self.records:
+            if record.dose is None or not record.roi_results:
+                continue
+            if any(r.mean_nm is not None and r.n_valid > 0
+                   for r in record.roi_results):
+                continue
+            n_short = sum(r.n_short for r in record.roi_results)
+            n_uncertain = sum(r.n_uncertain for r in record.roi_results)
+            if n_short <= n_uncertain:
+                continue
+            closed.append(ClosedDose(
+                dose=record.dose,
+                n_short=n_short,
+                n_total=n_short + n_uncertain,
+                path=record.path,
+            ))
+        return sorted(closed, key=lambda c: c.dose)
 
     def scale_warnings(self) -> list[str]:
         """세션 안에서 배율이 섞였는지 확인한다."""
