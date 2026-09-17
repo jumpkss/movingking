@@ -5,8 +5,14 @@ import pytest
 pytest.importorskip("PySide6")
 
 from ebl_gap.dataset import Session  # noqa: E402
+from ebl_gap.naming import infer_fields  # noqa: E402
 from ebl_gap.types import ImageRecord, RoiResult, ScaleInfo  # noqa: E402
-from ebl_gap_gui.panels import FilePanel, ResultPanel, ResultTable  # noqa: E402
+from ebl_gap_gui.panels import (  # noqa: E402
+    FilePanel,
+    NamingBanner,
+    ResultPanel,
+    ResultTable,
+)
 from tests.synth import synth_gap_image  # noqa: E402
 
 SCALE = ScaleInfo(nm_per_px=3.0, source="fei_metadata")
@@ -299,3 +305,70 @@ def test_the_result_panel_names_the_gap_orientation(qapp):
 
     panel.show_result(_angled_result(2.4))
     assert "갭 각도 2.40도 (세로 갭)" in panel.text()
+
+
+# ----------------------------------------------------- 파일명 dose 추정 배너
+
+REAL_NAMES = [
+    "ARP_70_C_140_001.tif",
+    "ARP_70_C_140_002.tif",
+    "ARP_70_C_160_001.tif",
+    "ARP_70_C_160_002.tif",
+    "ARP_70_C_180_001.tif",
+]
+
+
+def armed_banner():
+    banner = NamingBanner()
+    banner.show_guess(infer_fields(REAL_NAMES), REAL_NAMES)
+    return banner
+
+
+def test_naming_banner_says_which_field_it_read_and_what_it_found(qapp):
+    """자동으로 넣되 무엇을 넣었는지 보여준다. 추정이지 해독이 아니다."""
+    banner = armed_banner()
+    text = banner.text()
+    assert "4번째 칸" in text
+    assert "140" in text and "180" in text
+
+
+def test_naming_banner_offers_every_numeric_field(qapp):
+    banner = armed_banner()
+    assert banner.field_choices() == [1, 3, 4]
+    assert banner.current_field() == 3
+
+
+def test_choosing_another_field_emits_that_field(qapp):
+    banner = armed_banner()
+    seen = []
+    banner.field_chosen.connect(seen.append)
+    banner.choose_field(4)
+    assert seen == [4]
+
+
+def test_arming_the_banner_does_not_look_like_a_user_choice(qapp):
+    """채우는 동안 나가는 신호는 사용자의 선택이 아니다.
+
+    막지 않으면 폴더를 여는 순간 dose가 목록의 첫 칸 값으로 다시 채워진다.
+    """
+    banner = NamingBanner()
+    seen = []
+    banner.field_chosen.connect(seen.append)
+    banner.show_guess(infer_fields(REAL_NAMES), REAL_NAMES)
+    assert seen == []
+
+
+def test_turning_the_inference_off_announces_it_and_hides_the_banner(qapp):
+    banner = armed_banner()
+    seen = []
+    banner.inference_disabled.connect(lambda: seen.append("off"))
+    banner.disable_button.click()
+    assert seen == ["off"]
+    assert not banner.is_shown()
+
+
+def test_a_failed_guess_shows_no_banner(qapp):
+    banner = NamingBanner()
+    names = ["pattern_300uC.tif", "pattern_400uC.tif"]
+    banner.show_guess(infer_fields(names), names)
+    assert not banner.is_shown()

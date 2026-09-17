@@ -240,17 +240,29 @@ def format_report(session: Session) -> str:
         rows: list[tuple[float, str]] = []
         for point in curve:
             spread = "" if point.std_nm is None else f" +- {point.std_nm:.2f}"
+            # 같은 dose의 반복 촬영은 한 줄이다. 몇 장을 평균했는지와, 그중 몇
+            # 장이 전 구간 short였는지를 같은 줄에 적는다 — 한 장은 재지고 한
+            # 장은 닫혔다는 어긋남은 평균 하나로 뭉뚱그리면 사라지는데, 그것이
+            # 바로 이 dose를 고를지 말지를 가르는 사실이다.
+            parts = [f"유효 {point.n_valid}", f"short {point.n_short}"]
+            if point.n_images > 1:
+                parts.append(f"{point.n_images}장 평균")
+            if point.n_closed_images:
+                parts.append(f"{point.n_closed_images}/{point.n_images}장이 "
+                             "전 구간 short")
             rows.append((point.dose,
                          f"  {point.dose:>8.1f} uC : {point.mean_nm:7.2f}{spread} nm "
-                         f"(유효 {point.n_valid}, short {point.n_short})"))
+                         f"({', '.join(parts)})"))
         for dose_point in closed:
             # 두 줄로 낸다. 엔진은 닫힌 갭과 패턴을 벗어난 ROI를 구별할 수 없다 —
             # 평탄한 금속도 전 구간 short를 내기 때문이다. 이 블록이 사용자가
             # dose를 고르는 자리이므로 없는 확신을 적으면 안 된다.
             head = f"  {dose_point.dose:>8.1f} uC : "
+            shots = "" if dose_point.n_images < 2 else f", {dose_point.n_images}장"
             rows.append((dose_point.dose,
                          f"{head}전 구간 short "
-                         f"({dose_point.n_short}/{dose_point.n_total} 라인, 유효 0)"
+                         f"({dose_point.n_short}/{dose_point.n_total} 라인, "
+                         f"유효 0{shots})"
                          f"\n{'':>{len(head)}}{CLOSED_DOSE_AMBIGUITY}"))
         lines.extend(text for _, text in sorted(rows, key=lambda r: r[0]))
     return "\n".join(lines)

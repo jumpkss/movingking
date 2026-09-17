@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pytest
@@ -8,8 +9,9 @@ from ebl_gap.types import ImageRecord, RoiResult, ScaleInfo
 SCALE = ScaleInfo(nm_per_px=3.0, source="fei_metadata")
 
 
-def roi_result(mean_nm, n_valid=100, n_short=0, n_uncertain=0, scale=SCALE):
-    return RoiResult(mean_nm=mean_nm, std_nm=1.0, n_valid=n_valid,
+def roi_result(mean_nm, n_valid=100, n_short=0, n_uncertain=0, scale=SCALE,
+               std_nm=1.0):
+    return RoiResult(mean_nm=mean_nm, std_nm=std_nm, n_valid=n_valid,
                      n_short=n_short, n_uncertain=n_uncertain, n_low_confidence=0,
                      angle_deg=0.0, lines=(), warnings=(), scale=scale)
 
@@ -129,7 +131,7 @@ def test_a_fully_shorted_dose_is_reported_as_a_closed_dose():
     closed = session.closed_doses()
     assert [c.dose for c in closed] == [400.0]
     assert closed[0] == ClosedDose(dose=400.0, n_short=300, n_total=300,
-                                   path=Path("b.tif"))
+                                   paths=(Path("b.tif"),))
 
 
 def test_a_closed_dose_counts_uncertain_lines_in_its_total():
@@ -214,3 +216,119 @@ def test_one_measured_dose_is_enough_to_silence_the_session_warning():
 def test_an_empty_session_says_nothing():
     """아직 아무것도 측정하지 않은 세션에 설정 경고를 붙이면 안 된다."""
     assert Session().session_warnings() == []
+
+
+# ------------------------------- 같은 dose의 반복 촬영은 한 점으로 (Task 30)
+
+def test_repeat_shots_of_one_dose_make_a_single_point():
+    """사용자 요청: 같은 dose의 `_001`, `_002`는 평균 내서 한 점으로.
+
+    두 점으로 찍히면 곡선이 같은 x에 두 번 꺾이고, 어느 쪽이 그 dose의 답인지
+    화면이 말해 주지 않는다.
+    """
+    session = Session()
+    session.add(record("ARP_70_C_140_001.tif", 140.0, [roi_result(60.0, n_valid=200)]))
+    session.add(record("ARP_70_C_140_002.tif", 140.0, [roi_result(64.0, n_valid=200)]))
+
+    points = session.dose_curve()
+
+    assert len(points) == 1
+    assert points[0].mean_nm == pytest.approx(62.0)
+    assert points[0].n_valid == 400
+    assert points[0].n_images == 2
+    assert points[0].paths == (Path("ARP_70_C_140_001.tif"),
+                               Path("ARP_70_C_140_002.tif"))
+
+
+def test_the_error_bar_carries_the_disagreement_between_the_shots():
+    """오차 막대는 장 안의 산포와 장 사이의 산포를 합친 합동 표준편차다.
+
+    장 안의 산포만 쓰면, 두 장이 60 nm와 64 nm로 어긋나 있어도 오차 막대는
+    장 하나의 산포(1.0 nm)만큼만 그려진다 — dose를 고르는 사람에게 없는
+    재현성을 있다고 말하는 셈이다. 두 계산식을 여기서 직접 계산해 비교한다.
+    """
+    session = Session()
+    session.add(record("a_001.tif", 140.0, [roi_result(60.0, n_valid=200, std_nm=1.0)]))
+    session.add(record("a_002.tif", 140.0, [roi_result(64.0, n_valid=200, std_nm=1.0)]))
+
+    n, within_nm, between_nm = 200, 1.0, 2.0    # 평균 62에서 각각 ±2
+    pooled_nm = math.sqrt(
+        (2 * (n - 1) * within_nm ** 2 + 2 * n * between_nm ** 2) / (2 * n - 1)
+    )
+    within_only_nm = within_nm                  # 장 안의 산포만 평균한 값
+
+    assert pooled_nm == pytest.approx(2.2377, abs=1e-4)
+    assert pooled_nm > 2 * within_only_nm       # 두 식이 실제로 갈린다
+    assert session.dose_curve()[0].std_nm == pytest.approx(pooled_nm)
+
+
+def test_a_single_image_keeps_its_own_spread():
+    """장이 하나면 합동 분산은 그 장의 분산 그대로다. 예전 값과 같아야 한다."""
+    session = Session()
+    session.add(record("a.tif", 300.0, [roi_result(60.0, n_valid=200, std_nm=1.5)]))
+    assert session.dose_curve()[0].std_nm == pytest.approx(1.5)
+    assert session.dose_curve()[0].n_images == 1
+
+
+def test_a_dose_with_one_shot_measured_and_one_shorted_is_a_measured_point():
+    """한 장이라도 재졌으면 그 dose는 측정된 점이다 — 닫힘이 아니다.
+
+    그리고 같은 dose에서 한 장은 재지고 한 장은 닫혔다는 사실 자체가 사용자가
+    알아야 할 것이다. 몇 장이 전 구간 short였는지 점이 들고 있어야 곡선 툴팁과
+    리포트가 그 말을 할 수 있다.
+    """
+    session = Session()
+    session.add(record("a_001.tif", 140.0, [roi_result(60.0, n_valid=200)]))
+    session.add(record("a_002.tif", 140.0,
+                       [roi_result(None, n_valid=0, n_short=300)]))
+
+    points = session.dose_curve()
+
+    assert len(points) == 1
+    assert points[0].mean_nm == pytest.approx(60.0)
+    assert points[0].n_images == 2
+    assert points[0].n_closed_images == 1
+    assert points[0].n_short == 300
+    assert session.closed_doses() == []
+
+
+def test_closed_doses_group_the_repeats_of_one_dose():
+    """전 구간 short인 장이 여럿이어도 dose 하나에 점 하나다."""
+    session = Session()
+    for rep in (1, 2):
+        session.add(record(f"a_{rep:03d}.tif", 400.0,
+                           [roi_result(None, n_valid=0, n_short=300)]))
+
+    closed = session.closed_doses()
+
+    assert len(closed) == 1
+    assert closed[0].dose == 400.0
+    assert closed[0].n_short == 600
+    assert closed[0].n_total == 600
+    assert closed[0].paths == (Path("a_001.tif"), Path("a_002.tif"))
+
+
+def test_a_dose_point_counts_short_lines_from_every_shot():
+    """short 비율의 분모와 분자는 그 dose의 모든 장을 합친 것이다."""
+    session = Session()
+    session.add(record("a_001.tif", 140.0,
+                       [roi_result(60.0, n_valid=200, n_short=10, n_uncertain=5)]))
+    session.add(record("a_002.tif", 140.0,
+                       [roi_result(64.0, n_valid=200, n_short=30, n_uncertain=5)]))
+
+    point = session.dose_curve()[0]
+
+    assert (point.n_valid, point.n_short, point.n_uncertain) == (400, 40, 10)
+    assert point.n_total == 450
+
+
+def test_an_unmeasured_image_does_not_join_the_point_it_did_not_make():
+    """아직 재지 않은 장은 그 dose의 평균에 아무것도 보태지 않았다."""
+    session = Session()
+    session.add(record("a_001.tif", 140.0, [roi_result(60.0, n_valid=200)]))
+    session.add(record("a_002.tif", 140.0, []))
+
+    point = session.dose_curve()[0]
+
+    assert point.n_images == 1
+    assert point.paths == (Path("a_001.tif"),)

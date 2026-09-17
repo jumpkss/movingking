@@ -7,8 +7,11 @@ from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -16,8 +19,16 @@ from PySide6.QtWidgets import (
 )
 
 from ebl_gap.dataset import Session
+from ebl_gap.naming import (
+    NamingGuess,
+    dose_values_for,
+    numeric_field_indexes,
+)
 from ebl_gap.profile import measurement_runs_down
 from ebl_gap.types import ImageRecord, RoiResult
+
+#: 배너 한 줄에 늘어놓는 dose 값의 최대 개수. 그 뒤는 말줄임한다.
+MAX_SHOWN_DOSES = 8
 
 FILE_COLUMNS = ("파일", "dose(uC)", "상태")
 
@@ -224,6 +235,7 @@ class ResultPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._note = ""
         self._label = QLabel("")
         self._label.setWordWrap(True)
         self._label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -255,10 +267,23 @@ class ResultPanel(QWidget):
         if result.warnings:
             parts.append("")
             parts.extend(f"! {w}" for w in result.warnings)
-        self._label.setText("\n".join(parts))
+        self._label.setText("\n".join([*parts, *self._note_lines()]))
+
+    def set_filename_note(self, note: str | None) -> None:
+        """파일명에서 읽은 참고 메모(목표 갭 등)를 패널 아래에 달아 둔다.
+
+        **참고일 뿐이다.** 측정값과 비교하지도, 판정에 쓰지도 않는다 — 파일명은
+        의도이지 계측값이 아니다. 이미지를 바꿔도 남는다: 폴더 전체의 성질이라
+        한 장의 결과와 함께 지워지면 안 된다.
+        """
+        self._note = note or ""
+
+    def _note_lines(self) -> list[str]:
+        return ["", self._note] if self._note else []
 
     def clear(self) -> None:
-        self._label.setText("")
+        # 메모는 남긴다. 아직 재지 않은 이미지에서 사용자가 이 줄을 가장 오래 본다.
+        self._label.setText("\n".join(self._note_lines()).lstrip("\n"))
 
     def text(self) -> str:
         return self._label.text()
@@ -305,3 +330,107 @@ class ResultTable(QWidget):
     def cell(self, row: int, key: str) -> str:
         item = self._table.item(row, self._keys.index(key))
         return "" if item is None else item.text()
+
+
+class NamingBanner(QWidget):
+    """파일명에서 dose를 어떻게 읽었는지 한 줄로 보이고 바꿀 수 있게 한다.
+
+    사용자는 "도즈를 하나하나 입력하지 않도록"을 원했으므로 추정은 **자동으로
+    적용한다.** 그러나 추정은 해독이 아니다 — dose를 한 칸 잘못 읽으면
+    dose-gap 곡선 전체가 아무 표시 없이 틀리고, 그 곡선이 사용자가 dose를
+    고르는 화면이다. 그래서 무엇을 읽었는지 보이고, 칸을 바꾸거나 통째로 끌
+    수단을 같은 줄에 둔다.
+    """
+
+    field_chosen = Signal(int)
+    inference_disabled = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._names: list[str] = []
+        self._label = QLabel("")
+        self._label.setWordWrap(True)
+        self._combo = QComboBox()
+        self._combo.setToolTip("dose로 읽을 칸 바꾸기")
+        self.disable_button = QPushButton("사용 안 함")
+        self.disable_button.setToolTip("파일명 추정을 끄고 dose를 직접 입력한다")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self._label, 1)
+        layout.addWidget(self._combo)
+        layout.addWidget(self.disable_button)
+
+        self._combo.currentIndexChanged.connect(self._on_combo_changed)
+        self.disable_button.clicked.connect(self._on_disabled)
+        self.hide()
+
+    def show_guess(self, guess: NamingGuess, names) -> None:
+        """추정 결과를 띄운다. 읽어내지 못했으면 아무것도 보이지 않는다."""
+        if guess.dose_index is None:
+            self.hide_guess()
+            return
+        self._names = list(names)
+        self._set_label(guess.dose_index, guess.dose_values)
+        # 채우는 동안의 currentIndexChanged는 사용자의 선택이 아니다. 내보내면
+        # 폴더를 여는 순간 dose가 목록 첫 칸 값으로 덮인다.
+        blocked = self._combo.blockSignals(True)
+        try:
+            self._combo.clear()
+            for index in numeric_field_indexes(names):
+                self._combo.addItem(f"{index + 1}번째 칸", index)
+            position = self._combo.findData(guess.dose_index)
+            if position >= 0:
+                self._combo.setCurrentIndex(position)
+        finally:
+            self._combo.blockSignals(blocked)
+        self.show()
+
+    def _set_label(self, field_index: int, dose_values) -> None:
+        values = sorted(set(dose_values.values()))
+        shown = ", ".join(f"{value:g}" for value in values[:MAX_SHOWN_DOSES])
+        if len(values) > MAX_SHOWN_DOSES:
+            shown = f"{shown} ..."
+        self._label.setText(
+            f"파일명에서 dose를 {field_index + 1}번째 칸으로 읽었습니다: {shown}"
+        )
+
+    def hide_guess(self) -> None:
+        self._label.setText("")
+        blocked = self._combo.blockSignals(True)
+        try:
+            self._combo.clear()
+        finally:
+            self._combo.blockSignals(blocked)
+        self.hide()
+
+    def choose_field(self, index: int) -> None:
+        """사용자가 칸을 고른 것과 같은 경로를 탄다(테스트와 프로그램 조작용)."""
+        position = self._combo.findData(index)
+        if position >= 0:
+            self._combo.setCurrentIndex(position)
+
+    def field_choices(self) -> list[int]:
+        return [self._combo.itemData(i) for i in range(self._combo.count())]
+
+    def current_field(self) -> int | None:
+        return self._combo.currentData()
+
+    def is_shown(self) -> bool:
+        return not self.isHidden()
+
+    def text(self) -> str:
+        return self._label.text()
+
+    def _on_combo_changed(self, position: int) -> None:
+        index = self._combo.itemData(position)
+        if index is None:
+            return
+        # 줄의 문구부터 고른 칸으로 바꾼다. 값은 그대로인데 문구만 옛 칸을
+        # 가리키면, 사용자가 바꾼 뒤 읽는 유일한 확인 수단이 거짓말을 한다.
+        self._set_label(int(index), dose_values_for(self._names, int(index)))
+        self.field_chosen.emit(int(index))
+
+    def _on_disabled(self) -> None:
+        self.hide_guess()
+        self.inference_disabled.emit()

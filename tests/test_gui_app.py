@@ -1381,3 +1381,147 @@ def test_the_default_roi_stays_clear_of_the_databar(qapp, tmp_path):
 
     assert "데이터바" not in window.status_text(), window.status_text()
     assert window.session.records[0].roi_results
+
+
+# ------------------------------------------------ 파일명에서 dose를 읽어 채운다
+
+def write_named_sample(path, name, gap_nm, seed):
+    """이름을 직접 정하는 합성 SEM TIFF. uC도 FEI dose도 이름에 없다."""
+    img = synth_gap_image(width=512, height=512, gap_nm=gap_nm, nm_per_px=3.0,
+                          angle_deg=2.0, edge_sigma_px=1.2, noise_sigma=3.0,
+                          seed=seed)
+    out = path / name
+    tifffile.imwrite(out, np.clip(img, 0, 255).astype(np.uint8),
+                     extratags=[(34682, 's', 0, _fei_ini(), True)])
+    return out
+
+
+@pytest.fixture()
+def named_folder(tmp_path):
+    """사용자의 실제 이름 규칙: ARP_70_C_<dose>_<반복>.tif."""
+    for dose, gap_nm in ((140, 90.0), (160, 75.0)):
+        for rep in (1, 2):
+            write_named_sample(tmp_path, f"ARP_70_C_{dose}_{rep:03d}.tif",
+                               gap_nm, seed=dose * 10 + rep)
+    return tmp_path
+
+
+def test_open_folder_reads_the_dose_from_the_name_fields(qapp, named_folder):
+    """사용자 요청: "도즈를 하나하나 입력하지 않도록". 자동으로 채운다."""
+    window = MainWindow()
+    window.open_folder(named_folder)
+    assert sorted(r.dose for r in window.session.records) == [140.0, 140.0,
+                                                              160.0, 160.0]
+    assert window.file_panel.dose_text(0) == "140"
+
+
+def test_the_banner_shows_which_field_was_read(qapp, named_folder):
+    """자동으로 넣되 무엇을 넣었는지 보인다. 틀린 dose는 곡선을 통째로 뒤집는다."""
+    window = MainWindow()
+    window.open_folder(named_folder)
+    assert window.naming_banner.is_shown()
+    assert "4번째 칸" in window.naming_banner.text()
+    assert "140" in window.naming_banner.text()
+
+
+def test_the_uc_rule_wins_over_the_name_field_guess(qapp, tmp_path):
+    """기존 dose가 있으면 파일명 칸 추정은 손대지 않는다.
+
+    이 이름들에서 변하는 숫자 칸은 반복 번호(001, 002)뿐이라, 추정이 이기면
+    dose가 300/400에서 1/2로 덮인다 — x축이 통째로 거짓이 된다.
+    """
+    for dose in (300, 400):
+        for rep in (1, 2):
+            write_named_sample(tmp_path, f"ARP_70_C_{dose}uC_{rep:03d}.tif",
+                               90.0, seed=dose + rep)
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    assert sorted(r.dose for r in window.session.records) == [300.0, 300.0,
+                                                              400.0, 400.0]
+    # 아무것도 채우지 않았으면 배너도 없다. 채우지 않은 것을 채웠다고 말하면 안 된다.
+    assert not window.naming_banner.is_shown()
+
+
+def test_choosing_another_field_refills_every_dose(qapp, named_folder):
+    window = MainWindow()
+    window.open_folder(named_folder)
+    window.naming_banner.choose_field(1)        # 상수 칸 '70'
+    assert {r.dose for r in window.session.records} == {70.0}
+    assert window.file_panel.dose_text(0) == "70"
+
+
+def test_turning_the_inference_off_empties_the_doses_it_filled(qapp,
+                                                               named_folder):
+    window = MainWindow()
+    window.open_folder(named_folder)
+    window.naming_banner.disable_button.click()
+    assert all(r.dose is None for r in window.session.records)
+    assert window.file_panel.dose_text(0) == ""
+    assert not window.naming_banner.is_shown()
+
+
+def test_a_hand_edited_dose_survives_turning_the_inference_off(qapp,
+                                                               named_folder):
+    """사용자가 직접 고친 값은 추정의 것이 아니다. 끄기가 지우면 안 된다."""
+    window = MainWindow()
+    window.open_folder(named_folder)
+    window.file_panel._table.item(0, 1).setText("999")
+    window.naming_banner.disable_button.click()
+    assert window.session.records[0].dose == pytest.approx(999.0)
+    assert all(r.dose is None for r in window.session.records[1:])
+
+
+def test_names_without_a_numeric_field_show_no_banner(qapp, folder):
+    window = MainWindow()
+    window.open_folder(folder)
+    assert not window.naming_banner.is_shown()
+
+
+def test_the_result_panel_notes_the_target_gap_from_the_name(qapp,
+                                                             named_folder):
+    window = MainWindow()
+    window.open_folder(named_folder)
+    assert "목표 갭 70" in window.result_panel.text()
+
+
+def test_the_target_gap_from_the_name_never_touches_the_measurement(
+        qapp, named_folder):
+    """파일명은 의도이지 계측값이 아니다.
+
+    이름은 70 nm를 말하고 실제 갭은 90 nm다. 측정값도, 경고도, 판정도 이름을
+    쳐다보면 안 된다. 참고 줄로만 남는다.
+    """
+    window = MainWindow()
+    window.open_folder(named_folder)
+    window.select_image(0)
+    window.measure_current()
+    result = window.session.records[0].roi_results[0]
+    assert result.mean_nm == pytest.approx(90.0, abs=3.0)
+    assert all("목표" not in warning for warning in result.warnings)
+    assert "목표 갭 70" in window.result_panel.text()
+
+
+def test_opening_another_folder_drops_the_previous_name_reading(qapp,
+                                                                named_folder,
+                                                                folder):
+    """폴더가 바뀌면 다른 시료다. 앞 폴더의 추정이 남으면 남의 목표 갭을 읽는다."""
+    window = MainWindow()
+    window.open_folder(named_folder)
+    window.open_folder(folder)
+    assert not window.naming_banner.is_shown()
+    assert "목표 갭" not in window.result_panel.text()
+
+
+def test_repeat_shots_of_one_dose_land_on_one_curve_point(qapp, named_folder):
+    """폴더를 열고 네 장을 다 재면 곡선에는 dose 두 개뿐이다.
+
+    이름에서 dose를 읽는 것(Step 1~2)과 같은 dose를 한 점으로 묶는 것(Step 3)이
+    한 경로에서 만나는 자리다. 둘 중 하나만 되면 점이 네 개거나 없다.
+    """
+    window = MainWindow()
+    window.open_folder(named_folder)
+    for index in range(4):
+        window.select_image(index)
+        window.measure_current()
+    assert window.dose_plot.point_count() == 2
+    assert "2장 평균" in window.dose_plot.hover_tooltip(0)

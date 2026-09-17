@@ -238,3 +238,54 @@ def test_a_mark_taken_off_the_scene_is_not_reported_as_drawn(qapp):
     plot._plot.removeItem(plot._closed_item)   # 그림에서만 뺀다. 참조는 남는다
 
     assert plot.closed_dose_marks() == []
+
+
+# ------------------------------ 같은 dose의 반복 촬영 (Task 30)
+
+def shots_session(dose, means, closed=0, scale=SCALE):
+    """같은 dose로 찍은 여러 장. `closed`장은 전 구간 short다."""
+    session = Session()
+    index = 0
+    for mean_nm in means:
+        index += 1
+        session.add(ImageRecord(path=Path(f"a_{index:03d}.tif"), scale=scale,
+                                dose=dose, roi_results=[result(mean_nm)]))
+    for _ in range(closed):
+        index += 1
+        session.add(ImageRecord(path=Path(f"a_{index:03d}.tif"), scale=scale,
+                                dose=dose, roi_results=[
+                                    result(None, std_nm=None, n_valid=0,
+                                           n_short=300)]))
+    return session
+
+
+def test_repeat_shots_of_one_dose_are_drawn_as_one_point(qapp):
+    plot = DosePlot()
+    plot.set_session(shots_session(140.0, (60.0, 64.0)))
+    assert plot.point_count() == 1
+
+
+def test_the_tooltip_says_how_many_shots_the_point_averages(qapp):
+    """점 하나에 장이 몇 개 들어갔는지는 그림만 봐서는 알 수 없다."""
+    plot = DosePlot()
+    plot.set_session(shots_session(140.0, (60.0, 64.0)))
+    tooltip = plot.hover_tooltip(0)
+    assert "2장 평균" in tooltip
+    assert "62.00" in tooltip
+
+
+def test_the_tooltip_says_when_another_shot_of_the_dose_shorted(qapp):
+    """한 장은 재지고 한 장은 닫혔다 — 그 어긋남이 곡선에서 사라지면 안 된다."""
+    plot = DosePlot()
+    plot.set_session(shots_session(140.0, (60.0,), closed=1))
+    assert plot.point_count() == 1
+    assert plot.closed_dose_marks() == []
+    assert "1/2장이 전 구간 short" in plot.hover_tooltip(0)
+
+
+def test_a_dose_measured_in_one_shot_needs_no_shot_talk(qapp):
+    plot = DosePlot()
+    plot.set_session(shots_session(140.0, (60.0,)))
+    tooltip = plot.hover_tooltip(0)
+    assert "장 평균" not in tooltip
+    assert "전 구간 short" not in tooltip

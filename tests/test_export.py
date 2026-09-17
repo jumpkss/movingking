@@ -396,3 +396,52 @@ def test_the_overlay_of_a_horizontal_gap_stays_inside_the_roi():
     assert coloured.size > 0
     assert coloured[:, 0].min() >= roi.y0 and coloured[:, 0].max() <= roi.y1
     assert coloured[:, 1].min() >= roi.x0 and coloured[:, 1].max() <= roi.x1
+
+
+# ------------------------------ 같은 dose의 반복 촬영 (Task 30)
+
+def test_the_dose_block_folds_repeats_into_one_line(tmp_path):
+    """같은 dose의 두 장이 곡선에서 한 점이면 리포트에서도 한 줄이다.
+
+    두 줄로 남으면 리포트와 곡선이 같은 dose를 두고 다른 개수를 말한다.
+    """
+    session = Session()
+    session.add(measured_record(tmp_path / "a_001.tif", 140.0, 60.0))
+    session.add(measured_record(tmp_path / "a_002.tif", 140.0, 64.0))
+
+    block = format_report(session).split("dose - 갭 관계")[1]
+    rows = [line for line in block.splitlines() if "uC :" in line]
+
+    assert len(rows) == 1
+    assert "62.00" in rows[0]
+    assert "2장 평균" in rows[0]
+
+
+def test_the_dose_block_says_how_many_shots_were_fully_short(tmp_path):
+    """같은 dose에서 한 장은 재지고 한 장은 닫혔다 — 그 어긋남을 적는다.
+
+    측정된 점 하나로 뭉뚱그리면 사용자는 그 dose가 깨끗하게 재졌다고 읽는다.
+    """
+    session = Session()
+    session.add(measured_record(tmp_path / "a_001.tif", 140.0, 60.0))
+    session.add(closed_record(tmp_path / "a_002.tif", 140.0))
+
+    block = format_report(session).split("dose - 갭 관계")[1]
+    rows = [line for line in block.splitlines() if "uC :" in line]
+
+    assert len(rows) == 1
+    assert "1/2장이 전 구간 short" in rows[0]
+
+
+def test_a_closed_dose_line_counts_its_shots(tmp_path):
+    """전 구간 short인 장이 두 장이면 그 사실도 적는다."""
+    session = Session()
+    session.add(closed_record(tmp_path / "a_001.tif", 400.0))
+    session.add(closed_record(tmp_path / "a_002.tif", 400.0))
+
+    block = format_report(session).split("dose - 갭 관계")[1]
+    rows = [line for line in block.splitlines() if "uC :" in line]
+
+    assert len(rows) == 1
+    assert "600/600 라인" in rows[0]
+    assert "2장" in rows[0]

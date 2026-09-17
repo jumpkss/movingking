@@ -6,7 +6,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from ebl_gap.dataset import ClosedDose, Session
+from ebl_gap.dataset import ClosedDose, DosePoint, Session
 
 #: short 라인 비율이 이 값에 닿으면 그 dose 점을 빨갛게 표시한다.
 #: `stats.SHORT_RATIO_WARN`과 같은 값이고 비교도 `>=`로 같다 — 딱 5%인 dose에서
@@ -24,6 +24,27 @@ SHORT_MIXED_LABEL = "short 섞임"
 CLOSED_LABEL = "전 구간 short (확인 필요)"
 
 
+def point_tooltip(point: DosePoint) -> str:
+    """점 하나에 무엇이 들어갔는지 적는다.
+
+    같은 dose의 반복 촬영이 한 점으로 묶이므로, 그림만 봐서는 이 점이 한 장인지
+    세 장인지 알 수 없다. 그중 한 장이 전 구간 short였다는 사실은 특히 그렇다 —
+    평균 하나로 뭉뚱그리면 그 dose가 깨끗하게 재졌다고 읽힌다.
+    """
+    spread = "" if point.std_nm is None else f" ± {point.std_nm:.2f}"
+    lines = [
+        f"dose {point.dose:g}",
+        f"갭 {point.mean_nm:.2f}{spread} nm",
+        f"유효 {point.n_valid} / short {point.n_short} / "
+        f"판정보류 {point.n_uncertain} 라인",
+    ]
+    if point.n_images > 1:
+        lines.append(f"{point.n_images}장 평균")
+    if point.n_closed_images:
+        lines.append(f"{point.n_closed_images}/{point.n_images}장이 전 구간 short")
+    return "\n".join(lines)
+
+
 class DosePlot(QWidget):
     """dose-gap 곡선. short가 섞인 점은 눈에 띄게 표시한다."""
 
@@ -32,6 +53,7 @@ class DosePlot(QWidget):
         self._n_points = 0
         self._n_shorted = 0
         self._closed_item: pg.PlotDataItem | None = None
+        self._curve_item: pg.PlotDataItem | None = None
 
         self._warning = QLabel("")
         self._warning.setWordWrap(True)
@@ -51,6 +73,7 @@ class DosePlot(QWidget):
     def set_session(self, session: Session) -> None:
         self._plot.clear()
         self._closed_item = None
+        self._curve_item = None
         points = session.dose_curve()
         self._n_points = len(points)
         self._n_shorted = 0
@@ -73,9 +96,19 @@ class DosePlot(QWidget):
             [0.0 if p.std_nm is None else p.std_nm for p in points], dtype=float
         )
 
-        self._plot.plot(doses, means, pen=pg.mkPen("#1f77b4", width=2),
-                        symbol="o", symbolSize=8, symbolBrush="#1f77b4",
-                        name=MEASURED_LABEL)
+        self._curve_item = self._plot.plot(
+            doses, means, pen=pg.mkPen("#1f77b4", width=2),
+            symbol="o", symbolSize=8, symbolBrush="#1f77b4",
+            name=MEASURED_LABEL,
+            data=[point_tooltip(p) for p in points],
+        )
+        # 점마다 다른 글이 뜨게 한다. PlotDataItem은 hoverable/tip을 산점도로
+        # 넘겨주지 않으므로(0.14 실측) 산점도에 직접 건다. 점을 더하지 않는
+        # addPoints 호출이 그 설정을 받는 공개 경로다.
+        self._curve_item.scatter.addPoints(
+            x=[], y=[], hoverable=True,
+            tip=lambda x, y, data: "" if data is None else str(data),
+        )
         self._plot.addItem(pg.ErrorBarItem(x=doses, y=means, height=2 * spreads,
                                            pen=pg.mkPen("#1f77b4")))
 
@@ -107,6 +140,26 @@ class DosePlot(QWidget):
             symbolPen=pg.mkPen("#d62728", width=3),
             name=CLOSED_LABEL,
         )
+
+    def hover_tooltip(self, index: int) -> str:
+        """그 점 위에 마우스를 올렸을 때 실제로 뜨는 글.
+
+        pyqtgraph가 hover에서 하는 것과 같은 경로로 읽는다 — 글만 만들어 두고
+        점에 걸지 않았거나 hover를 켜지 않은 구현은 여기를 통과하지 못한다.
+        """
+        item = self._curve_item
+        if item is None or item.scene() is not self._plot.scene():
+            return ""
+        if not item.scatter.opts["hoverable"]:
+            return ""
+        spots = item.scatter.points()
+        if not 0 <= index < len(spots):
+            return ""
+        spot = spots[index]
+        tip = item.scatter.opts["tip"]
+        if tip is None:
+            return ""
+        return str(tip(x=spot.pos().x(), y=spot.pos().y(), data=spot.data()))
 
     def closed_dose_marks(self) -> list[tuple[float, float]]:
         """실제로 그려진 "갭 닫힘" 표시의 좌표.

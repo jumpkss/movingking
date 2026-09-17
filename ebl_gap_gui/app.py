@@ -42,6 +42,7 @@ from ebl_gap.measure import (
     MeasureParams,
     measure_roi,
 )
+from ebl_gap.naming import dose_values_for, infer_fields
 from ebl_gap.orientation import detect_base_angle_deg
 from ebl_gap.profile import extract_profiles
 from ebl_gap.stats import representative_line
@@ -49,7 +50,7 @@ from ebl_gap.types import Roi
 from ebl_gap_gui.calibration import CalibrationDialog
 from ebl_gap_gui.dose_plot import DosePlot
 from ebl_gap_gui.image_view import ImageView
-from ebl_gap_gui.panels import FilePanel, ResultPanel, ResultTable
+from ebl_gap_gui.panels import FilePanel, NamingBanner, ResultPanel, ResultTable
 from ebl_gap_gui.profile_plot import ProfilePlot
 
 IMAGE_SUFFIXES = (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp")
@@ -66,6 +67,24 @@ DEFAULT_SHORT_FRACTION = 0.12
 
 #: 갭 방향을 판별할 때 훑어보는 상자의 비율. 예전 기본 ROI와 같은 크기다.
 _PROBE_FRACTION = 0.40
+
+
+def target_gap_note(guess) -> str:
+    """파일명의 상수 숫자 칸을 목표 갭 후보로 적는 참고 문구.
+
+    **참고일 뿐이다.** 측정값과 비교하지도, 판정에 쓰지도 않는다 — 파일명은
+    의도이지 계측값이 아니다. 이름에 적힌 70 nm와 실측 90 nm가 다를 때 옳은
+    것은 실측이고, 둘을 자동으로 견주면 툴이 이름을 근거로 계측을 의심하게 된다.
+    """
+    values = sorted(guess.constant_numeric.values())
+    if not values:
+        return ""
+    if len(values) == 1:
+        head = f"파일명 기준 목표 갭 {values[0]:g} nm"
+    else:
+        head = ("파일명 기준 목표 갭 후보 "
+                + ", ".join(f"{value:g}" for value in values) + " nm")
+    return f"{head} (참고용 — 측정값과 비교하지 않습니다)"
 
 
 def _centred_roi(width: int, height: int, box_width: int,
@@ -154,6 +173,11 @@ class MainWindow(QMainWindow):
         self._status = ""
 
         self.file_panel = FilePanel()
+        self.naming_banner = NamingBanner()
+        # 파일명 추정이 채워 넣은 행. [사용 안 함]이 되돌릴 대상이 정확히 이것이다 —
+        # 사용자가 손으로 고친 값이나 uC 규칙이 읽은 값까지 지우면 안 된다.
+        self._inferred_doses: set[int] = set()
+        self._naming_names: list[str] = []
         self.image_view = ImageView()
         self.result_panel = ResultPanel()
         self.profile_plot = ProfilePlot()
@@ -205,6 +229,12 @@ class MainWindow(QMainWindow):
 
         self.file_panel.selection_changed.connect(self.select_image)
         self.file_panel.dose_edited.connect(lambda *_: self._refresh_session_views())
+        # 손으로 고친 값은 더 이상 추정의 것이 아니다. 잊지 않으면 [사용 안 함]이
+        # 사용자가 직접 입력한 dose까지 비운다.
+        self.file_panel.dose_edited.connect(
+            lambda row, _value: self._inferred_doses.discard(row))
+        self.naming_banner.field_chosen.connect(self._use_dose_field)
+        self.naming_banner.inference_disabled.connect(self._drop_inferred_doses)
         # ROI를 옮기면 그 ROI로 그린 것을 전부 버린다. 측정 설정 변경도 같은
         # 슬롯을 탄다 — 처리가 갈라지면 한쪽에만 고친 것이 다른 쪽에 빠진다.
         self.image_view.roi_changed.connect(self._discard_stale_diagnostics)
@@ -223,8 +253,16 @@ class MainWindow(QMainWindow):
         self.next_anomaly_button.clicked.connect(
             lambda: self._jump_to_anomaly(+1))
 
+        # 배너는 파일 목록 바로 위다. 자동으로 채운 dose가 보이는 칸이 그 아래
+        # 목록이므로, 무엇을 읽었는지는 같은 눈길 안에 있어야 한다.
+        file_box = QWidget()
+        file_layout = QVBoxLayout(file_box)
+        file_layout.setContentsMargins(0, 0, 0, 0)
+        file_layout.addWidget(self.naming_banner)
+        file_layout.addWidget(self.file_panel)
+
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.file_panel)
+        splitter.addWidget(file_box)
         splitter.addWidget(self.image_view)
         # 미니 플롯과 라인 조작 줄은 한 덩어리다 — 스플리터가 둘을 갈라 놓으면
         # 사용자가 플롯만 남기고 조작을 접어버릴 수 있다.
@@ -395,6 +433,10 @@ class MainWindow(QMainWindow):
             self._pixels[index] = loaded.pixels
             self._databar_tops[index] = loaded.databar_top
 
+        # 목록을 채우기 전에 읽는다. dose 칸과 결과 패널의 참고 줄이 첫 화면부터
+        # 맞게 보여야 한다.
+        self._apply_naming_guess([path.name for path in paths])
+
         self.file_panel.set_records(self.session.records)
         for index, pixels in self._pixels.items():
             self.file_panel.set_thumbnail(index, pixels)
@@ -413,6 +455,70 @@ class MainWindow(QMainWindow):
             self.image_view.set_image(np.empty((0, 0)))
             self.result_panel.clear()
             self._set_status("폴더에 이미지가 없습니다")
+
+    def _apply_naming_guess(self, names) -> None:
+        """파일명에서 읽은 dose를 자동으로 채운다.
+
+        사용자는 "도즈를 하나하나 입력하지 않도록"을 원했으므로 묻지 않고
+        적용한다. 대신 무엇을 읽었는지 배너에 보이고 바꿀 수 있게 한다 —
+        추정이지 해독이 아니고, 한 칸 잘못 읽으면 dose-gap 곡선 전체가 아무
+        표시 없이 틀린다.
+
+        **이미 dose가 있으면 그쪽이 이긴다.** FEI 메타데이터나 `uC` 규칙이
+        읽은 값은 이름 칸의 추측보다 근거가 세다. 파일명 추정은 그것들이
+        실패했을 때의 대비책이다.
+        """
+        self._naming_names = list(names)
+        self._inferred_doses = set()
+        guess = infer_fields(self._naming_names)
+        for index, record in enumerate(self.session.records):
+            if record.dose is not None:
+                continue
+            dose = guess.dose_values.get(record.path.name)
+            if dose is not None:
+                record.dose = dose
+                self._inferred_doses.add(index)
+
+        self.result_panel.set_filename_note(target_gap_note(guess))
+        if self._inferred_doses:
+            self.naming_banner.show_guess(guess, self._naming_names)
+        else:
+            # 아무것도 채우지 않았으면 배너도 없다. 채우지 않은 것을 채웠다고
+            # 말하는 줄은 사용자를 엉뚱한 칸으로 데려간다.
+            self.naming_banner.hide_guess()
+
+    def _use_dose_field(self, field_index: int) -> None:
+        """사용자가 dose로 쓸 칸을 직접 골랐다. 추정보다 사용자가 이긴다.
+
+        고른 칸에 숫자가 없는 파일은 dose를 비운다. 그 파일만 예전 값을 남기면
+        한 폴더의 dose가 두 규칙에서 섞여 나오고, 어느 것이 어느 쪽인지 화면에
+        드러나지 않는다.
+        """
+        values = dose_values_for(self._naming_names, field_index)
+        self._inferred_doses = set()
+        for index, record in enumerate(self.session.records):
+            record.dose = values.get(record.path.name)
+            if record.dose is not None:
+                self._inferred_doses.add(index)
+            self.file_panel.refresh_row(index)
+        self._refresh_session_views()
+        self._set_status(
+            f"파일명 {field_index + 1}번째 칸을 dose로 읽었습니다 "
+            f"({len(self._inferred_doses)}/{len(self.session.records)}장)"
+        )
+
+    def _drop_inferred_doses(self) -> None:
+        """[사용 안 함]. 파일명에서 채운 dose만 비운다.
+
+        손으로 고친 값과 `uC` 규칙이 읽은 값은 건드리지 않는다 — 추정을 끄는
+        것과 사용자가 입력한 것을 지우는 것은 다른 일이다.
+        """
+        for index in sorted(self._inferred_doses):
+            self.session.records[index].dose = None
+            self.file_panel.refresh_row(index)
+        self._inferred_doses.clear()
+        self._refresh_session_views()
+        self._set_status("파일명 dose 추정을 껐습니다 — dose를 직접 입력하세요")
 
     def select_image(self, index: int) -> None:
         if not (0 <= index < len(self.session.records)):
