@@ -7836,3 +7836,194 @@ Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "
 git commit -m "Detect whether the gap runs across or down, then fit the tilt within it"
 ```
 
+
+---
+
+### Task 29: ROI를 갭 모양에 맞춘 직사각형으로 띄우고, 이미지 사이에서 유지한다
+
+**사용자 요청:** "ROI가 정사각형보다는 직사각형이면 좋겠어. 매번 내가 늘려줘야 돼서
+불편해."
+
+핵심은 기본 모양이 아니라 **유지**다. 같은 폴더의 이미지들은 배율도 패턴 위치도
+같아서 ROI가 거의 그대로여야 하는데, 지금은 이미지를 넘길 때마다 기본 정사각형으로
+돌아간다. Task 22가 **측정한** 이미지의 ROI는 복원하지만 **아직 안 잰** 이미지는
+기본값으로 간다.
+
+- [ ] **Step 1: 마지막 ROI를 다음 이미지가 물려받는다 (RED 먼저)**
+
+```python
+def test_an_unmeasured_image_inherits_the_last_used_roi(qapp, folder):
+    """폴더의 이미지들은 배율도 패턴 위치도 같다. 한 번 맞춘 ROI를 장마다
+    다시 끌게 하면 10장짜리 dose 시리즈에서 같은 동작을 열 번 한다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.image_view.set_roi(Roi(100, 400, 800, 480))
+    shaped = window.image_view.current_roi()
+
+    window.select_image(1)                      # 아직 측정 안 한 이미지
+
+    assert window.image_view.current_roi() == shaped
+```
+
+측정한 이미지로 돌아가면 **그 이미지의 ROI**가 복원되는 기존 동작(Task 22)은
+그대로여야 한다. 그 테스트가 깨지면 우선순위를 잘못 잡은 것이다 — 순서는
+"측정한 이미지면 그 ROI, 아니면 마지막 ROI, 그것도 없으면 기본값".
+
+`MainWindow`에 `self._last_roi: Roi | None`을 두고 `roi_changed`에서 갱신한다.
+**Task 20/22가 세운 `roi_changed` 처리(오버레이·프로파일·보관함 삭제)를 건드리지
+말 것** — 거기에 한 줄 더하는 것이지 대체하는 것이 아니다.
+
+이미지 크기가 다르면 그대로 쓸 수 없다. 클램프하되 **모양(가로:세로 비율)은
+지킨다**. 크기가 달라 클램프했으면 상태 표시줄에 한 번 알린다.
+
+- [ ] **Step 2: 기본 ROI를 갭 방향에 맞춘 직사각형으로**
+
+첫 이미지에는 물려받을 ROI가 없다. 지금은 이미지 중앙의 정사각형이다.
+Task 28의 `detect_base_angle_deg`로 갭 방향을 보고 긴 쪽을 갭 축에 맞춘다.
+
+```python
+    # 갭이 가로면 가로로 긴 상자, 세로면 세로로 긴 상자. 짧은 쪽(측정 방향)은
+    # 갭보다 넉넉해야 문턱을 전극 평탄부에서 잡는다 — 갭 두께의 4~5배가 목표다.
+    # 갭 두께를 아직 모르므로 이미지 크기의 비율로 잡는다.
+    LONG_FRACTION, SHORT_FRACTION = 0.60, 0.12
+```
+
+데이터바를 빼고 판별한다(`databar_top`이 있으면 그 위까지만). 판별이 실패하면
+가로로 긴 상자를 기본으로 한다 — 사용자의 S/D 패턴이 가로이고, 세로 갭이면
+사용자가 한 번 돌리면 그 뒤로는 Step 1이 유지한다.
+
+기본 ROI가 데이터바를 침범하지 않는 것도 테스트로 박는다.
+
+- [ ] **Step 3: 전체 테스트와 커밋**
+
+Run: `QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`
+Expected: 기존 505개 전부 통과 + 신규
+
+```bash
+git commit -m "Carry the ROI across images and shape it to the gap"
+```
+
+---
+
+### Task 30: 파일명에서 dose를 읽고, 같은 dose의 반복 촬영을 한 점으로 묶는다
+
+**사용자 요청 2:** "파일들의 이름에서 도즈값, gap 사이즈를 추론해서 찾아줘 내가
+도즈를 하나하나 입력하지 않도록."
+**사용자 요청 3:** "겹치는 이미지는 제외" → 확인 결과 **같은 dose의 반복 촬영
+(`_001`, `_002`)**이고, 곡선에서는 **평균 내서 한 점으로**.
+
+사용자의 실제 파일명과 현재 동작(컨트롤러 실측):
+
+```
+현재 정규식: (?i)(\d+(?:\.\d+)?)\s*uc
+  ARP_70_C_140_001.tif -> dose None      <- uC가 없어서 전부 실패
+  ...
+칸별 분석:
+  0번: ['ARP']                      상수
+  1번: ['70']                       상수(숫자) <- 목표 갭 70 nm로 보인다
+  2번: ['C']                        상수
+  3번: ['140','160','180','200','220']  변함 <- dose
+  4번: ['001','002']                변함, 각 dose 안에서 반복 <- 반복 번호
+```
+
+- [ ] **Step 1: 파일명 칸 분석기 (엔진, Qt 없음)**
+
+`ebl_gap/naming.py`를 새로 만든다.
+
+```python
+@dataclass(frozen=True)
+class NamingGuess:
+    """폴더 전체의 파일명에서 읽어낸 칸 구조."""
+    dose_index: int | None
+    replicate_index: int | None
+    constant_numeric: dict[int, float]   # 상수 숫자 칸 -> 값 (목표 갭 후보)
+    dose_values: dict[str, float]        # 파일명 -> dose
+    field_count: int
+```
+
+```python
+def infer_fields(names: Sequence[str]) -> NamingGuess:
+    """파일명들을 구분자로 쪼개 dose 칸과 반복 번호 칸을 추정한다.
+
+    추정이지 해독이 아니다. 반드시 사용자에게 보여주고 확인받아야 한다 —
+    dose를 잘못 읽으면 dose-gap 곡선 전체가 조용히 틀린다.
+    """
+```
+
+규칙:
+- 구분자 `_`, `-`, 공백으로 쪼갠다. 칸 수가 다른 파일이 섞여 있으면 **추정을
+  포기하고 `dose_index=None`을 돌려준다.** 반쯤 맞는 추정이 제일 위험하다.
+- 후보 = 모든 파일에서 순수 숫자이고 서로 다른 값이 2개 이상인 칸.
+- **반복 번호 칸**: 그 칸을 뺀 나머지 칸으로 묶었을 때, 각 묶음 안에서 값이
+  중복 없이 나오는 칸. (`001`, `002`가 dose마다 한 번씩)
+- **dose 칸**: 남은 후보 중 서로 다른 값이 가장 많은 칸.
+- **목표 갭 후보**: 모든 파일에서 같은 값을 갖는 숫자 칸. 여러 개면 전부 돌려주고
+  고르는 것은 사용자에게 맡긴다.
+
+테스트: 사용자의 실제 이름 7개로 `dose_index == 3`, `replicate_index == 4`,
+`constant_numeric == {1: 70.0}`을 확인한다. 그리고 칸 수가 다른 파일이 섞이면
+포기하는지, 반복 번호가 없는 폴더(파일당 dose 하나)도 되는지.
+
+- [ ] **Step 2: 확인 UI — 자동으로 넣되 무엇을 넣었는지 보여준다**
+
+사용자는 "하나하나 입력하지 않도록"을 원한다. 그러니 **자동 적용한다.** 다만
+**무엇을 읽었는지 보이고 바꿀 수 있어야 한다.** 파일 목록 위에 한 줄:
+
+```
+파일명에서 dose를 4번째 칸으로 읽었습니다: 140, 160, 180, 200, 220   [칸 바꾸기 ▾] [사용 안 함]
+```
+
+`[칸 바꾸기]`는 칸 번호 목록이고, 고르면 그 칸 값으로 dose를 다시 채운다.
+`[사용 안 함]`은 dose를 전부 비운다(사용자가 직접 입력).
+
+**FEI 메타데이터나 기존 `uC` 규칙이 dose를 이미 찾았으면 그쪽이 이긴다.**
+파일명 추정은 그것들이 실패했을 때의 대비책이다. 우선순위를 테스트로 박는다.
+
+목표 갭 후보는 결과 패널에 참고로만 표시한다: `파일명 기준 목표 갭 70 nm`.
+**측정값과 비교하거나 판정에 쓰지 않는다** — 파일명은 의도이지 계측값이 아니다.
+
+- [ ] **Step 3: 같은 dose를 한 점으로 (엔진)**
+
+`Session.dose_curve()`가 지금은 **레코드마다 한 점**을 만든다(컨트롤러 확인:
+`for record in self.records`). 같은 dose의 `_001`, `_002`가 점 두 개로 찍힌다.
+dose로 묶어 한 점으로 만든다.
+
+평균은 유효 라인 수 가중. **표준편차는 장 안의 산포와 장 사이의 산포를 합친
+합동 표준편차**로 낸다 — 장 사이의 재현성이 바로 사용자가 보고 싶은 것이다.
+
+```python
+    # 합동 분산: 원래 라인들을 전부 모아 한 번에 계산한 것과 같은 값이다.
+    # 장 안의 산포만 쓰면 장 사이가 크게 어긋나도 오차 막대가 작게 나온다 —
+    # dose를 고르는 사람에게 없는 재현성을 있다고 말하는 셈이다.
+    grand = sum(n_i * x_i for ...) / sum(n_i)
+    var = (sum((n_i - 1) * s_i**2) + sum(n_i * (x_i - grand)**2)) / (sum(n_i) - 1)
+```
+
+`DosePoint`에 `n_images: int`와 `paths: tuple[Path, ...]`를 더한다(`path` 하나는
+더 이상 진실이 아니다). **소비자를 전부 확인하고 보고서에 적어라** — dose_plot,
+export의 리포트, 결과 테이블.
+
+`closed_doses()`도 같은 dose로 묶는다. **한 장이라도 측정됐으면 그 dose는 측정된
+점이다**(닫힘이 아니다). 그 경우 몇 장이 전 구간 short였는지 곡선 툴팁과 리포트에
+적는다 — 같은 dose에서 한 장은 재지고 한 장은 닫혔다면 그 자체가 사용자가 알아야
+할 사실이다.
+
+- [ ] **Step 4: 판별력 있는 테스트**
+
+- dose 140에 `_001`(60 nm, 200줄), `_002`(64 nm, 200줄) -> 점 1개, 평균 62 nm.
+  **장 사이 4 nm 차이가 오차 막대에 반영되는지**를 단언한다(장 안 산포만 쓰면
+  훨씬 작게 나온다). 두 계산식의 값을 직접 비교해 판별력을 증명한다.
+- 같은 dose에서 한 장 측정 + 한 장 전 구간 short -> 측정된 점 1개,
+  `closed_doses()`에는 없음, 리포트에 "1/2장이 전 구간 short" 표시.
+- dose가 없는 레코드는 지금처럼 곡선에서 빠진다.
+
+- [ ] **Step 5: 전체 테스트와 커밋**
+
+Run: `QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+
+```bash
+git commit -m "Read the dose from file names and fold repeats into one point"
+```
+
