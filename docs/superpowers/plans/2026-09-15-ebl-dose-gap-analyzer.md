@@ -7688,3 +7688,151 @@ Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "
 git commit -m "Stop stamping a calibrated image as an error"
 ```
 
+
+---
+
+### Task 28: 가로 갭을 자동으로 판별하고, 그 방향 안에서 기울기를 보정한다
+
+**실사용 버그 제보.** 사용자의 실제 SEM 이미지(FEI, 100,000x, 3.125 nm/px)에서
+가로로 누운 S/D 갭을 재니 **참값 약 70 nm가 137.39 nm로** 나왔다. 컨트롤러 역산:
+
+```
+측정 137.39 / 참값 70.0 = 1.963 배
+각도 오차 58.48도 (자동 추정 31.52도, 가로 갭의 정답은 90도)
+1/cos(58.48도) = 1.913 배
+예상 = 70 / cos(58.48도) = 133.9 nm   (실제 나온 값 137.39)
+```
+
+재현 실험(세로 갭 합성 이미지를 `np.rot90`으로 눕힌 것):
+
+```
+세로 갭 70nm         -> 각도  -0.00도, 측정 69.97 nm   OK
+가로 갭 70nm (자동)  -> 각도   0.27도, 측정 실패
+가로 갭 70nm (90도)  -> 측정 69.98 nm                  OK
+```
+
+**원인:** 이 프로젝트의 합성 이미지가 전부 세로 갭이라, 가로 갭을 한 번도 시험하지
+않았다. 403개 테스트가 전부 통과한 이유다. 스펙과 구현 모두 `angle_deg = 0`(세로
+갭)을 암묵적 기본으로 깔고 있다.
+
+- [ ] **Step 1: 방향 판별 (RED 먼저)**
+
+`ebl_gap/orientation.py`에 추가한다.
+
+```python
+def detect_base_angle_deg(image, roi: Roi) -> float:
+    """갭이 세로(0도)인지 가로(90도)인지 판별한다.
+
+    갭은 어둡고 전극은 밝다. 세로 갭이면 열 평균이 깊게 파이고 행 평균은
+    평탄하다. 가로 갭이면 반대다. 대비가 더 큰 쪽이 측정 방향이다.
+
+    기울기까지 여기서 재지 않는다. 방향만 고르고, 그 방향 안에서의 미세
+    기울기는 Theil-Sen이 맡는다 — 두 가지를 한 추정에 섞으면 둘 다 나빠진다.
+    """
+```
+
+구현: `extract_profiles(image, roi, 0.0)`로 축 정렬 배열을 한 번 뽑고
+
+```python
+    contrast_x = float(prof.mean(axis=0).ptp())   # 가로 방향 변화 = 세로 갭
+    contrast_y = float(prof.mean(axis=1).ptp())   # 세로 방향 변화 = 가로 갭
+    return 90.0 if contrast_y > contrast_x else 0.0
+```
+
+테스트: 세로 합성 -> 0.0, 그것을 `np.rot90`한 것 -> 90.0. 노이즈 3수준과 갭
+20~100 nm에서 전부. **동률(정사각 ROI에 대각 갭)은 0도를 고른다**는 것도 박는다 —
+어느 쪽도 맞지 않는 경우라 임의 선택임을 docstring에 적는다.
+
+- [ ] **Step 2: ROI 상자도 같이 돌린다 (가장 중요)**
+
+`extract_profiles`는 지금 **ROI의 가로를 언제나 측정 방향**으로 쓴다(`u`가 `w`개).
+각도만 90도로 줘도 가로 500 x 세로 75인 ROI가 **세로로 ±250픽셀**을 훑는다 —
+사용자의 실제 ROI 모양이 바로 이것이고, 데이터바까지 내려간다.
+
+측정 방향이 세로에 가까우면 `w`와 `h`를 맞바꾼다.
+
+```python
+    a_rad = np.radians(float(angle_deg))
+    # 측정 방향이 세로에 가까우면 ROI의 세로 길이가 측정 범위가 되어야 한다.
+    # 이것을 안 바꾸면 가로로 납작한 ROI가 각도 90도에서 세로로 ROI 밖까지
+    # 훑는다. 상자는 화면에 그려진 그대로인데 표본은 딴 데서 온다.
+    if abs(np.cos(a_rad)) < abs(np.sin(a_rad)):
+        w, h = roi.height, roi.width
+    else:
+        w, h = roi.width, roi.height
+```
+
+**`aligned_to_image`도 똑같이 바꿔야 한다.** 이 둘이 갈라지면 오버레이의 초록 에지가
+실제 잰 자리와 다른 곳에 그려진다 — 계측 툴에서 가장 나쁜 종류의 버그다. 공통 헬퍼
+`_uv_extent(roi, angle_deg) -> tuple[int, int]`로 한 자리에 두고 양쪽이 부른다.
+
+테스트: 각도 90도에서 뽑은 프로파일의 **행 수가 ROI 가로 픽셀 수**와 같고, 각 행의
+**길이가 ROI 세로 픽셀 수**와 같은지. 그리고 각도 0도에서는 기존과 완전히 동일한지
+(기존 테스트가 전부 그대로 통과해야 한다).
+
+- [ ] **Step 3: `_lowest_scanned_row`도 맞춘다**
+
+`measure.py`의 데이터바 도달 계산이 `roi.width`를 쓴다. Step 2의 맞바꿈 뒤에는
+측정 방향 표본 수가 달라지므로 같은 헬퍼에서 받아 써야 한다. 각도 90도에서 세로
+도달 범위가 정확히 `roi.y1`이 되는 것(상자 그대로)을 테스트로 박는다.
+
+- [ ] **Step 4: 기준 방향 위에서 기울기 추정**
+
+`estimate_angle_deg`에 `base_deg: float | None = None`을 더한다. `None`이면
+`detect_base_angle_deg`로 정한다. 프로파일을 `base_deg`로 뽑아 지금처럼 Theil-Sen을
+돌리고, **반환은 `base_deg + tilt_deg`**로 한다.
+
+반환값을 `(angle_deg, n_rows, base_deg)` 3-튜플로 바꾼다. **호출자를 전부 확인하고
+보고서에 적어라.**
+
+- [ ] **Step 5: 타당성 경고를 기준 대비로**
+
+`measure_roi`가 `abs(angle_deg) > ANGLE_SANITY_DEG`로 판정하는데, 가로 갭의 정답인
+90도가 이 문턱에 걸린다. **기준에서 얼마나 벗어났는지**로 바꾼다.
+
+```python
+    base_deg = detect_base_angle_deg(image, roi)
+    ...
+    if abs(angle_deg - base_deg) > ANGLE_SANITY_DEG:
+```
+
+기준 판별은 **자동/고정 양쪽에서 한 번만** 부른다. 문구에 판별 결과를 넣는다:
+`가로 갭으로 판별했습니다(기준 90도). 추정 각도 {x}도 — ...`
+
+테스트: 가로 갭 90도는 경고 없음, 가로 갭 150도 고정은 경고 있음, 세로 갭 2도는
+경고 없음, 세로 갭 40도는 경고 있음.
+
+- [ ] **Step 6: 가로 갭 정확도 게이트**
+
+`tests/test_accuracy.py`는 **손대지 말고**, 같은 격자를 가로 갭으로 도는
+`tests/test_accuracy_horizontal.py`를 새로 만든다. 세로용 합성 이미지를
+`np.rot90`으로 눕혀서 쓰면 참값이 보존된다. 허용 오차는 세로와 같은 ±1픽셀.
+**허용치를 늘려서 통과시키면 이 테스트의 의미가 사라진다.**
+
+- [ ] **Step 7: 사용자 사례 회귀 테스트**
+
+3.125 nm/px, 70 nm 가로 갭, 가로로 납작한 ROI(가로 500 x 세로 75). 수정 전에는
+1.9배 부풀고, 수정 후에는 ±1픽셀 안에 들어오는 것을 확인한다. 주석에 실제 제보
+수치(137.39 nm)를 남긴다.
+
+- [ ] **Step 8: GUI**
+
+- 각도 스핀박스 범위 `setRange(-90.0, 90.0)` -> `setRange(-180.0, 180.0)`.
+  기준 90도에 기울기가 붙으면 90을 넘는다. 지금 범위면 조용히 잘린다.
+- 결과 패널의 각도 표시 옆에 판별 결과를 적는다: `갭 각도 91.2도 (가로 갭)`.
+- README에 한 줄: 가로/세로는 자동 판별하며, 틀리면 각도를 직접 고정하라고.
+
+- [ ] **Step 9: 전체 테스트**
+
+Run: `QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 python -m pytest -q`
+Run: `grep -rE --include=*.py "PySide6|pyqtgraph|ebl_gap_gui" ebl_gap/ && echo "제약 위반" || echo "OK"`
+
+기존 403개가 **하나도 깨지지 않아야 한다.** 깨지면 세로 갭 동작을 바꾼 것이므로
+멈추고 보고한다.
+
+- [ ] **Step 10: 커밋**
+
+```bash
+git commit -m "Detect whether the gap runs across or down, then fit the tilt within it"
+```
+
