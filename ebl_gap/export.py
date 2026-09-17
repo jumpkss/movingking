@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from ebl_gap.dataset import Session
-from ebl_gap.profile import aligned_to_image
+from ebl_gap.profile import aligned_to_image, uv_extent
 from ebl_gap.types import UNCERTAIN_STATUSES, ImageRecord, Roi, RoiResult
 
 #: 전 구간 short인 dose 옆에 반드시 따라붙는 문장.
@@ -172,9 +172,12 @@ def render_overlay(image, roi: Roi, result: RoiResult) -> np.ndarray:
             continue
 
         if line.left_px is None or line.right_px is None:
-            # 에지가 없는 라인은 정렬 좌표계의 중앙에 한 점만 찍는다.
+            # 에지가 없는 라인은 정렬 좌표계의 중앙에 한 점만 찍는다. 중앙은
+            # ROI의 가로가 아니라 측정 방향 표본 수에서 온다 — 측정 방향이
+            # 세로면 둘이 맞바뀌고, 가로를 그대로 쓰면 점이 ROI 밖에 찍힌다.
+            u_extent, _ = uv_extent(roi, result.angle_deg)
             x, y = aligned_to_image(roi, result.angle_deg,
-                                    (roi.width - 1) / 2.0, line.row)
+                                    (u_extent - 1) / 2.0, line.row)
             _put(canvas, x, y, color)
             continue
 

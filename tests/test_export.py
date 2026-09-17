@@ -375,3 +375,24 @@ def test_the_report_head_carries_the_session_warning(tmp_path):
 
     assert "[세션 경고]" in head
     assert "ROI" in head
+
+
+def test_the_overlay_of_a_horizontal_gap_stays_inside_the_roi():
+    """가로 갭(90도)의 오버레이도 잰 자리에 찍혀야 한다.
+
+    `render_overlay`가 정렬 좌표계의 중앙을 `roi.width`로 잡으면, 측정 방향이
+    세로일 때 그 중앙이 측정 범위(ROI 세로) 밖이다. 에지를 못 찾은 라인의 점이
+    ROI에서 수백 픽셀 떨어진 곳에 찍힌다 — 숫자와 그림이 다른 자리를 가리킨다.
+    """
+    img = np.rot90(synth_gap_image(width=600, height=600, gap_nm=40.0,
+                                   nm_per_px=1.0))
+    img[262:337, 100:200] = 200.0  # 몇 줄을 통째로 메워 에지 없는 라인을 만든다
+    roi = Roi(10, 262, 509, 336)
+    result = measure_roi(img, roi, SCALE)
+    assert any(ln.left_px is None for ln in result.lines), "no_edge 라인이 필요하다"
+
+    overlay = render_overlay(img, roi, result)
+    coloured = np.argwhere(np.any(overlay != overlay[..., :1], axis=-1))
+    assert coloured.size > 0
+    assert coloured[:, 0].min() >= roi.y0 and coloured[:, 0].max() <= roi.y1
+    assert coloured[:, 1].min() >= roi.x0 and coloured[:, 1].max() <= roi.x1

@@ -109,3 +109,65 @@ def test_aligned_to_image_centre_maps_to_roi_centre():
     x, y = aligned_to_image(roi, 15.0, (roi.width - 1) / 2.0,
                             (roi.height - 1) / 2.0)
     assert (x, y) == pytest.approx((roi.cx, roi.cy))
+
+
+# --- 측정 방향이 세로일 때 (Task 28) ---------------------------------------
+#
+# 사용자의 실제 ROI는 가로 500 x 세로 75였다. 각도 90도에서 ROI의 가로를 측정
+# 범위로 쓰면 세로로 ±250픽셀을 훑어 데이터바까지 내려간다 — 화면의 상자와
+# 표본을 뜬 자리가 갈라진다.
+
+FLAT_ROI = Roi(10, 200, 509, 274)  # 가로 500 x 세로 75
+
+
+def test_a_vertical_measurement_direction_swaps_the_roi_box():
+    img = np.arange(600 * 600, dtype=float).reshape(600, 600)
+    out = extract_profiles(img, FLAT_ROI, 90.0)
+    assert out.shape == (FLAT_ROI.width, FLAT_ROI.height) == (500, 75)
+
+
+def test_a_vertical_measurement_direction_stays_inside_the_roi_box():
+    """상자 밖을 훑으면 NaN이 섞여 나온다 — 실제로는 데이터바 밝기가 섞였다.
+
+    금지 구역은 상자에서 한 픽셀 물려 놓는다. 쌍선형 보간이 좌표가 정확히
+    정수여도 가중치 0으로 옆 픽셀을 읽고, 0 * NaN은 NaN이라 테두리 한 줄은
+    상자 안을 훑어도 NaN이 된다. 이 테스트가 잡으려는 것은 그 한 픽셀이
+    아니라 ±250픽셀짜리 탈출이다.
+    """
+    img = np.full((600, 600), 100.0)
+    img[: FLAT_ROI.y0 - 1, :] = np.nan
+    img[FLAT_ROI.y1 + 2 :, :] = np.nan
+    img[:, : FLAT_ROI.x0 - 1] = np.nan
+    img[:, FLAT_ROI.x1 + 2 :] = np.nan
+    out = extract_profiles(img, FLAT_ROI, 90.0)
+    assert np.isfinite(out).all()
+
+
+def test_aligned_to_image_follows_the_same_swap():
+    """오버레이의 초록 에지는 실제로 잰 자리에 찍혀야 한다.
+
+    `extract_profiles`와 `aligned_to_image`가 갈라지면 CSV의 숫자와 그림이 서로
+    다른 자리를 가리킨다 — 계측 툴에서 가장 나쁜 종류의 버그다.
+    """
+    from scipy.ndimage import map_coordinates
+
+    from ebl_gap.profile import aligned_to_image
+
+    img = np.arange(600 * 600, dtype=float).reshape(600, 600)
+    prof = extract_profiles(img, FLAT_ROI, 90.0)
+    for u_px, v_px in ((0, 0), (37, 480), (74, 499)):
+        x, y = aligned_to_image(FLAT_ROI, 90.0, u_px, v_px)
+        direct = map_coordinates(img, [[y], [x]], order=1, mode="nearest")[0]
+        assert prof[v_px, u_px] == pytest.approx(direct, rel=1e-9)
+
+
+def test_uv_extent_keeps_the_roi_box_for_a_horizontal_measurement():
+    from ebl_gap.profile import uv_extent
+
+    assert uv_extent(FLAT_ROI, 0.0) == (FLAT_ROI.width, FLAT_ROI.height)
+    assert uv_extent(FLAT_ROI, 12.0) == (FLAT_ROI.width, FLAT_ROI.height)
+    assert uv_extent(FLAT_ROI, 90.0) == (FLAT_ROI.height, FLAT_ROI.width)
+    assert uv_extent(FLAT_ROI, -80.0) == (FLAT_ROI.height, FLAT_ROI.width)
+    # 45도는 동률이다. uv_extent와 detect_base_angle_deg가 같은 쪽(가로 측정)을
+    # 고르지 않으면 45도 부근에서 상자와 표본이 갈라진다.
+    assert uv_extent(FLAT_ROI, 45.0) == (FLAT_ROI.width, FLAT_ROI.height)

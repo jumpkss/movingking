@@ -276,3 +276,26 @@ def test_thumbnail_survives_a_row_refresh(qapp):
     assert panel.has_thumbnail(0) is True
     # refresh_row가 항목을 새로 만들므로 아이콘을 다시 붙이지 않으면 사라진다.
     assert panel._table.item(0, 0).icon().availableSizes()
+
+
+# --- 방향 판별 표시 (Task 28) ----------------------------------------------
+
+
+def _angled_result(angle_deg):
+    return RoiResult(mean_nm=70.0, std_nm=1.5, n_valid=280, n_short=0,
+                     n_uncertain=0, n_low_confidence=0, angle_deg=angle_deg,
+                     lines=(), warnings=(), scale=SCALE)
+
+
+def test_the_result_panel_names_the_gap_orientation(qapp):
+    """91.2도는 오타가 아니라 가로 갭이다. 그 말을 옆에 적어 준다.
+
+    이 한 줄이 없으면 사용자는 90도 근처의 각도를 추정 붕괴로 읽는다 —
+    실제로는 가로 갭에서 정상이다.
+    """
+    panel = ResultPanel()
+    panel.show_result(_angled_result(91.2))
+    assert "갭 각도 91.20도 (가로 갭)" in panel.text()
+
+    panel.show_result(_angled_result(2.4))
+    assert "갭 각도 2.40도 (세로 갭)" in panel.text()

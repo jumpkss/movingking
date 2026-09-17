@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from ebl_gap.dataset import Session
+from ebl_gap.profile import measurement_runs_down
 from ebl_gap.types import ImageRecord, RoiResult
 
 FILE_COLUMNS = ("파일", "dose(uC)", "상태")
@@ -239,12 +240,16 @@ class ResultPanel(QWidget):
             spread = "" if result.std_nm is None else f" ± {result.std_nm:.2f}"
             head = f"갭 {result.mean_nm:.2f}{spread} nm"
 
+        # 90도 근처의 각도는 오타가 아니라 가로 갭이다. 그 말을 옆에 적어
+        # 주지 않으면 사용자가 정상값을 추정 붕괴로 읽는다.
+        orientation = ("가로" if measurement_runs_down(result.angle_deg)
+                       else "세로")
         parts = [
             head,
             f"유효 {result.n_valid} / short {result.n_short} / "
             f"판정보류 {result.n_uncertain} 라인",
             f"정밀도 주의 {result.n_low_confidence} 라인",
-            f"갭 각도 {result.angle_deg:.2f}도",
+            f"갭 각도 {result.angle_deg:.2f}도 ({orientation} 갭)",
             f"{result.scale.nm_per_px:.4f} nm/px [{result.scale.source}]",
         ]
         if result.warnings:

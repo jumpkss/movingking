@@ -1247,3 +1247,15 @@ def test_the_angle_spin_box_spans_every_angle_the_engine_can_return(qapp):
     for angle_deg in (-70.0, 70.0):
         window.angle_deg_spin.setValue(angle_deg)
         assert window.angle_deg_spin.value() == pytest.approx(angle_deg)
+
+
+def test_the_angle_spin_box_reaches_the_horizontal_base(qapp):
+    """가로 갭의 기준은 90도이고 거기에 기울기가 붙으면 90을 넘는다.
+
+    범위가 (-90, 90)이면 91.5도가 조용히 90도로 잘려, 화면의 각도와 측정에
+    실제로 쓴 각도가 갈라진다.
+    """
+    window = MainWindow()
+    for angle_deg in (91.5, -91.5, 180.0, -180.0):
+        window.angle_deg_spin.setValue(angle_deg)
+        assert window.angle_deg_spin.value() == pytest.approx(angle_deg)

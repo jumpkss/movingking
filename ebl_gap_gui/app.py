@@ -95,10 +95,12 @@ class MainWindow(QMainWindow):
         # 있다"를 요구한다. 자동 추정이 무너지는 ROI(갭이 가장자리에 붙는 배치)
         # 에서 사용자가 손으로 잡을 수 있는 유일한 수단이다.
         self.angle_deg_spin = QDoubleSpinBox()
-        # estimate_angle_deg는 arctan 결과이므로 (-90, 90)을 낸다. 범위를 그보다
-        # 좁히면 무장할 때 값이 조용히 잘려, 화면의 각도와 측정에 쓴 각도가
-        # 갈라진다. 하필 잘리는 것이 사용자에게 보여줘야 할 붕괴한 각도다.
-        self.angle_deg_spin.setRange(-90.0, 90.0)
+        # estimate_angle_deg는 기준(세로 0도 / 가로 90도)에 arctan 기울기를 얹어
+        # 돌려주므로 90을 넘을 수 있다(가로 갭에서 91.5도가 정상값이다). 범위를
+        # 그보다 좁히면 무장할 때 값이 조용히 잘려, 화면의 각도와 측정에 쓴
+        # 각도가 갈라진다. 하필 잘리는 것이 가로 갭의 정상값이거나 사용자에게
+        # 보여줘야 할 붕괴한 각도다.
+        self.angle_deg_spin.setRange(-180.0, 180.0)
         self.angle_deg_spin.setDecimals(2)
         self.angle_deg_spin.setSingleStep(0.25)
         self.angle_deg_spin.setSuffix("도")

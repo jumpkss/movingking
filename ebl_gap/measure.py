@@ -12,8 +12,16 @@ from typing import TYPE_CHECKING
 
 from ebl_gap.classify import classify_line
 from ebl_gap.edges import analyze_profile
-from ebl_gap.orientation import InsufficientEdgesError, estimate_angle_deg
-from ebl_gap.profile import extract_profiles
+from ebl_gap.orientation import (
+    InsufficientEdgesError,
+    detect_base_angle_deg,
+    estimate_angle_deg,
+)
+from ebl_gap.profile import (
+    extract_profiles,
+    measurement_runs_down,
+    uv_extent,
+)
 from ebl_gap.stats import mark_outliers, summarize
 from ebl_gap.types import LineResult, Roi, RoiResult, ScaleInfo
 
@@ -31,6 +39,12 @@ if TYPE_CHECKING:  # 런타임 import는 하지 않는다. loader가 tifffile/Pi
 #: 사용자가 ROI를 확인해야 하므로 경고가 맞는 대응이다. 이 값은 특정 테스트를
 #: 통과시키려고 맞춘 것이 아니라 스펙이 적은 기울기 범위에서 끌어낸 것이다.
 ANGLE_SANITY_DEG = 15.0
+
+#: 도달 행 계산에서 부동소수점 먼지를 걷어내는 여유(px). `cos(radians(90))`은
+#: 0이 아니라 6e-17이고, 그대로 올림하면 정확히 90도에서 한 행이 덤으로 붙어
+#: 데이터바 바로 위의 멀쩡한 ROI가 거부된다. 실제 도달 범위에 1 nm 단위로
+#: 영향을 줄 수 있는 크기가 아니다.
+_REACH_EPS_PX = 1e-9
 
 
 class DatabarOverlapError(ValueError):
@@ -77,16 +91,27 @@ def _lowest_scanned_row(roi: Roi, angle_deg: float) -> int:
     """회전한 ROI가 실제로 훑는 가장 아래 행.
 
     `extract_profiles`는 ROI 상자를 그대로 읽는 것이 아니라 `angle_deg`만큼
-    돌린 사각형을 훑는다. 측정 방향 오프셋 u가 ±width/2까지 가고 y에 `-u·sin`
-    으로 들어가므로, 모서리는 최대 `(width/2)·|sin θ|` 행만큼 아래로 내려간다.
+    돌린 사각형을 훑는다. 측정 방향 오프셋 u는 y에 `-u·sin`으로, 갭 축 오프셋
+    v는 `+v·cos`으로 들어간다. 두 항 중 큰 쪽은 기준선 `roi.y1`이 이미 품고
+    있으므로, 상자 밖으로 더 내려가는 몫은 남은 항 하나다.
     `ceil`로 올림해 픽셀 한 칸도 넘겨주지 않는다.
 
-    세로 방향은 `cos θ`만큼 오히려 줄어들지만 빼지 않는다 — 데이터바 쪽으로는
-    넉넉하게 보는 편이 안전하고, 그래야 0도에서 값이 정확히 `roi.y1`이 되어
-    회전 없는 기존 동작과 한 치도 달라지지 않는다.
+    회전으로 오히려 줄어드는 몫은 빼지 않는다 — 데이터바 쪽으로는 넉넉하게
+    보는 편이 안전하고, 그래야 0도에서 값이 정확히 `roi.y1`이 되어 회전 없는
+    기존 동작과 한 치도 달라지지 않는다. 각도 90도(가로 갭의 정답)에서도
+    정확히 `roi.y1`이다: 상자가 측정 방향과 함께 돌았으므로 도달 범위는 화면에
+    그려진 상자 그대로다.
+
+    표본 수와 방향 판단을 `profile` 모듈에서 받아 온다. 여기서 따로 계산하면
+    데이터바 검사와 실제 표본 추출이 서로 다른 상자를 보게 된다.
     """
     angle_rad = math.radians(float(angle_deg))
-    return roi.y1 + math.ceil((roi.width / 2) * abs(math.sin(angle_rad)))
+    u_extent, v_extent = uv_extent(roi, angle_deg)
+    if measurement_runs_down(angle_deg):
+        swing = (v_extent / 2) * abs(math.cos(angle_rad))
+    else:
+        swing = (u_extent / 2) * abs(math.sin(angle_rad))
+    return roi.y1 + math.ceil(swing - _REACH_EPS_PX)
 
 
 def measure_roi(
@@ -119,28 +144,44 @@ def measure_roi(
     extra_warnings: list[str] = []
     locked = angle_deg is not None
 
+    # 기준 방향은 자동/고정 양쪽에서 한 번만 판별한다. 고정한 각도에도 기준이
+    # 필요하다 — 타당성 검사가 절댓값이 아니라 기준 대비로 판정하기 때문이다.
+    base_deg = detect_base_angle_deg(image, roi)
+
     if angle_deg is None:
         try:
-            angle_deg, _ = estimate_angle_deg(image, roi, **params.edge_kwargs)
+            angle_deg, _, _ = estimate_angle_deg(image, roi, base_deg=base_deg,
+                                                 **params.edge_kwargs)
         except InsufficientEdgesError as exc:
-            angle_deg = 0.0
-            extra_warnings.append(f"각도 자동 추정 실패, 0도로 측정함 ({exc})")
+            angle_deg = base_deg
+            extra_warnings.append(
+                f"각도 자동 추정 실패, {base_deg:.0f}도로 측정함 ({exc})"
+            )
 
     # 범위 검사는 각도의 출처를 가리지 않는다. 고정한 -70도는 추정한 -70도와
     # 똑같이 틀린 폭을 내므로, 고정을 검사 면제로 두면 사용자가 손으로 넣은
     # 오타만 조용히 통과한다. 권하는 행동이 다르므로 문구는 나눈다 — 추정이
     # 무너졌으면 ROI를 고쳐야 하고, 고정값이 이상하면 입력한 숫자를 고쳐야
     # 한다. 이미 고정한 사람에게 고정을 다시 권하면 따를 조언이 남지 않는다.
-    if abs(angle_deg) > ANGLE_SANITY_DEG:
+    #
+    # 절댓값이 아니라 기준에서 벗어난 정도로 본다. 가로 갭의 정답인 90도를
+    # 절댓값으로 재면 언제나 경고가 붙어 경고가 잡음이 된다. 문구에 판별 결과를
+    # 넣는 이유는, 판별이 틀렸을 때 사용자가 그 사실을 알아야 각도를 고정할
+    # 마음을 먹기 때문이다.
+    if abs(angle_deg - base_deg) > ANGLE_SANITY_DEG:
+        # 판별 결과를 부르는 이름은 결과 패널과 같은 술어에서 온다.
+        orientation = "가로" if measurement_runs_down(base_deg) else "세로"
+        judged = f"{orientation} 갭으로 판별했습니다(기준 {base_deg:.0f}도). "
         if locked:
             extra_warnings.append(
-                f"고정한 각도가 {angle_deg:.1f}도입니다 — 의도한 값인지 "
+                f"{judged}고정한 각도가 {angle_deg:.1f}도입니다 — 의도한 값인지 "
                 f"확인하세요"
             )
         else:
             extra_warnings.append(
-                f"갭 축 각도가 {angle_deg:.1f}도로 추정됐습니다 — ROI가 갭을 "
-                f"제대로 가로지르는지 확인하고, 필요하면 각도를 직접 고정하세요"
+                f"{judged}갭 축 각도가 {angle_deg:.1f}도로 추정됐습니다 — ROI가 "
+                f"갭을 제대로 가로지르는지 확인하고, 필요하면 각도를 직접 "
+                f"고정하세요"
             )
 
     # 데이터바 검사는 여기서 한다. 각도가 확정된 뒤라야 ROI가 실제로 훑는

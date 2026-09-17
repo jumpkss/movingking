@@ -270,3 +270,72 @@ def test_measure_loaded_says_so_when_the_scale_is_not_settled():
     img = synth_gap_image(gap_nm=40.0, nm_per_px=1.0)
     with pytest.raises(ValueError, match="스케일"):
         measure_loaded(_loaded(img, databar_top=None, scale=None), ROI)
+
+
+# --- 가로 갭 (Task 28) ------------------------------------------------------
+
+FLAT_ROI = Roi(10, 262, 509, 336)  # 가로 500 x 세로 75 — 사용자의 실제 ROI 모양
+#: 600x600 이미지를 눕히면 갭 중심이 y=299.5에 온다. FLAT_ROI는 거기에 맞춰 놓았다.
+
+
+def _horizontal_gap_image(**kwargs):
+    """세로 갭 합성 이미지를 눕힌 것. rot90은 참값을 보존한다."""
+    return np.rot90(synth_gap_image(**kwargs))
+
+
+def test_a_vertical_measurement_reaches_exactly_the_roi_bottom():
+    """각도 90도에서 도달 범위는 상자 그대로여야 한다.
+
+    `roi.width`를 측정 방향 표본 수로 가정한 계산은 90도에서 가로 500짜리 ROI가
+    세로로 250행 더 내려간다고 본다. 그러면 데이터바 근처의 멀쩡한 ROI가 거부된다.
+    """
+    from ebl_gap.measure import _lowest_scanned_row
+
+    assert _lowest_scanned_row(FLAT_ROI, 90.0) == FLAT_ROI.y1
+    assert _lowest_scanned_row(FLAT_ROI, 0.0) == FLAT_ROI.y1
+    # 88도: 측정 방향이 세로이므로 갭 축(=ROI 가로 500) 쪽이 cos만큼 내려간다.
+    assert _lowest_scanned_row(FLAT_ROI, 88.0) == FLAT_ROI.y1 + 9
+
+
+def test_a_horizontal_gap_just_above_the_databar_is_not_refused():
+    img = _horizontal_gap_image(width=600, height=600, gap_nm=40.0,
+                                nm_per_px=1.0)
+    result = measure_roi(img, FLAT_ROI, SCALE, angle_deg=90.0,
+                         databar_top=FLAT_ROI.y1 + 1)
+    assert result.mean_nm is not None, result.warnings
+
+
+def test_a_horizontal_gap_is_measured_without_an_angle_warning():
+    """가로 갭의 정답인 90도가 타당성 문턱에 걸리면 안 된다.
+
+    문턱을 절댓값으로 보면 90도는 언제나 경고다. 기준에서 얼마나 벗어났는지로
+    봐야 한다.
+    """
+    img = _horizontal_gap_image(width=600, height=600, gap_nm=40.0,
+                                nm_per_px=1.0)
+    result = measure_roi(img, FLAT_ROI, SCALE)
+    assert result.angle_deg == pytest.approx(90.0, abs=0.5)
+    assert not any("각도" in w for w in result.warnings), result.warnings
+
+
+def test_a_locked_angle_far_from_the_horizontal_base_still_warns():
+    img = _horizontal_gap_image(width=600, height=600, gap_nm=40.0,
+                                nm_per_px=1.0)
+    result = measure_roi(img, FLAT_ROI, SCALE, angle_deg=150.0)
+    warning = next((w for w in result.warnings if "고정한 각도" in w), None)
+    assert warning is not None, result.warnings
+    assert "가로 갭" in warning and "기준 90도" in warning
+
+
+def test_a_small_tilt_on_the_vertical_base_stays_quiet():
+    img = synth_gap_image(width=512, height=512, gap_nm=40.0, nm_per_px=1.0)
+    result = measure_roi(img, ROI, SCALE, angle_deg=2.0)
+    assert not any("각도" in w for w in result.warnings), result.warnings
+
+
+def test_a_large_tilt_on_the_vertical_base_warns_and_names_the_base():
+    img = synth_gap_image(width=512, height=512, gap_nm=40.0, nm_per_px=1.0)
+    result = measure_roi(img, ROI, SCALE, angle_deg=40.0)
+    warning = next((w for w in result.warnings if "고정한 각도" in w), None)
+    assert warning is not None, result.warnings
+    assert "세로 갭" in warning and "기준 0도" in warning
