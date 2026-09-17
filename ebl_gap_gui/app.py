@@ -42,6 +42,7 @@ from ebl_gap.measure import (
     MeasureParams,
     measure_roi,
 )
+from ebl_gap.orientation import detect_base_angle_deg
 from ebl_gap.profile import extract_profiles
 from ebl_gap.stats import representative_line
 from ebl_gap.types import Roi
@@ -52,6 +53,86 @@ from ebl_gap_gui.panels import FilePanel, ResultPanel, ResultTable
 from ebl_gap_gui.profile_plot import ProfilePlot
 
 IMAGE_SUFFIXES = (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp")
+
+#: `Roi`가 허용하는 최소 크기. `ImageView.set_roi`의 하한과 같은 값이다.
+MIN_ROI_WIDTH_PX = 9
+MIN_ROI_HEIGHT_PX = 5
+
+#: 기본 ROI가 차지하는 비율. 긴 쪽은 갭 축을 따라, 짧은 쪽은 측정 방향으로.
+#: 짧은 쪽(측정 방향)은 갭보다 넉넉해야 문턱을 전극 평탄부에서 잡는다 — 갭
+#: 두께의 4~5배가 목표다. 갭 두께를 아직 모르므로 이미지 크기의 비율로 잡는다.
+DEFAULT_LONG_FRACTION = 0.60
+DEFAULT_SHORT_FRACTION = 0.12
+
+#: 갭 방향을 판별할 때 훑어보는 상자의 비율. 예전 기본 ROI와 같은 크기다.
+_PROBE_FRACTION = 0.40
+
+
+def _centred_roi(width: int, height: int, box_width: int,
+                 box_height: int) -> Roi:
+    """주어진 영역 한가운데에 놓인 상자. 크기는 `Roi`의 하한까지 보장한다."""
+    box_width = max(MIN_ROI_WIDTH_PX, min(width, box_width))
+    box_height = max(MIN_ROI_HEIGHT_PX, min(height, box_height))
+    x0 = max(0, (width - box_width) // 2)
+    y0 = max(0, (height - box_height) // 2)
+    return Roi(x0, y0, x0 + box_width - 1, y0 + box_height - 1)
+
+
+def default_roi(image, databar_top: int | None = None) -> Roi:
+    """물려받을 ROI가 없을 때 띄우는 상자. 긴 쪽을 갭 축에 맞춘다.
+
+    갭이 가로면 가로로 긴 상자, 세로면 세로로 긴 상자다. 방향은 Task 28의
+    `detect_base_angle_deg`가 판별한다 — 여기서 따로 세지 않는다.
+
+    데이터바는 빼고 본다. 데이터바는 균일한 띠라 판별을 흐리고, 무엇보다 긴
+    쪽이 거기까지 뻗으면 `measure_roi`가 첫 측정을 `DatabarOverlapError`로
+    거부한다. 폴더를 연 직후 "ROI를 다시 잡으세요"만 나오는 프로그램이 된다.
+
+    판별이 실패하면(이미지가 판별할 수 없을 만큼 작은 경우) 가로로 긴 상자를
+    쓴다 — 사용자의 S/D 패턴이 가로이고, 세로 갭이면 한 번만 돌려 주면 그
+    뒤로는 마지막 ROI가 유지한다.
+    """
+    array = np.asarray(image)
+    height, width = int(array.shape[0]), int(array.shape[1])
+    usable_height = height if databar_top is None \
+        else max(MIN_ROI_HEIGHT_PX, min(height, int(databar_top)))
+
+    try:
+        probe = _centred_roi(width, usable_height,
+                             int(width * _PROBE_FRACTION),
+                             int(usable_height * _PROBE_FRACTION))
+        base_angle_deg = detect_base_angle_deg(array, probe)
+    except Exception:
+        base_angle_deg = 90.0
+
+    if abs(base_angle_deg) >= 45.0:     # 가로 갭 — 갭 축이 이미지 가로다
+        box_width = int(width * DEFAULT_LONG_FRACTION)
+        box_height = int(usable_height * DEFAULT_SHORT_FRACTION)
+    else:                               # 세로 갭 — 갭 축이 이미지 세로다
+        box_width = int(width * DEFAULT_SHORT_FRACTION)
+        box_height = int(usable_height * DEFAULT_LONG_FRACTION)
+    return _centred_roi(width, usable_height, box_width, box_height)
+
+
+def fit_roi_to_image(roi: Roi, shape: tuple[int, int]) -> tuple[Roi, bool]:
+    """물려받은 ROI를 이 이미지 안에 넣는다. 가로:세로 비율은 지킨다.
+
+    비율을 버리고 한 변씩 잘라 넣으면 측정 방향(짧은 쪽) 폭이 조용히 달라진다.
+    사용자가 맞춰 놓은 것은 위치만이 아니라 "갭 두께의 네댓 배"라는 모양이고,
+    그 모양이 문턱을 전극 평탄부에서 잡게 해 준다. 그래서 두 변에 같은 배율을
+    먹여 줄인 뒤 경계 안으로 민다.
+
+    Returns:
+        (맞춘 ROI, 실제로 줄이거나 옮겼는가)
+    """
+    height, width = shape
+    scale = min(1.0, width / roi.width, height / roi.height)
+    new_width = max(MIN_ROI_WIDTH_PX, min(width, int(roi.width * scale)))
+    new_height = max(MIN_ROI_HEIGHT_PX, min(height, int(roi.height * scale)))
+    x0 = max(0, min(roi.x0, width - new_width))
+    y0 = max(0, min(roi.y0, height - new_height))
+    fitted = Roi(x0, y0, x0 + new_width - 1, y0 + new_height - 1)
+    return fitted, fitted != roi
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +162,10 @@ class MainWindow(QMainWindow):
         # 열쇠는 세션 인덱스이므로 open_folder에서 반드시 함께 비운다.
         self._profiles_by_index: dict[int, np.ndarray] = {}
         self._measured_rois: dict[int, Roi] = {}
+        # 아직 안 잰 이미지가 물려받을 ROI. 같은 폴더의 dose 시리즈는 배율도
+        # 패턴 위치도 같아서 ROI가 거의 그대로여야 한다. 폴더가 바뀌면 다른
+        # 시료이므로 반드시 비운다 — 남겨두면 새 시료에 남의 상자가 얹힌다.
+        self._last_roi: Roi | None = None
         self.line_selector = QSpinBox()
         self.line_selector.setPrefix("라인 ")
         self.line_selector.setEnabled(False)
@@ -123,6 +208,11 @@ class MainWindow(QMainWindow):
         # ROI를 옮기면 그 ROI로 그린 것을 전부 버린다. 측정 설정 변경도 같은
         # 슬롯을 탄다 — 처리가 갈라지면 한쪽에만 고친 것이 다른 쪽에 빠진다.
         self.image_view.roi_changed.connect(self._discard_stale_diagnostics)
+        # Task 20/22가 세운 위 한 줄(오버레이·프로파일·보관함 삭제)을 건드리지
+        # 않고 기억만 따로 붙인다. `_discard_stale_diagnostics`는 측정 설정
+        # 변경도 함께 타는 자리라, ROI를 기억하는 일을 거기 섞으면 "ROI가
+        # 움직였다"와 "설정이 바뀌었다"가 한 몸이 된다.
+        self.image_view.roi_changed.connect(self._remember_roi)
         self.line_selector.valueChanged.connect(self.show_line)
         self.angle_deg_spin.valueChanged.connect(self._angle_controls_changed)
         self.angle_lock_check.toggled.connect(self._angle_controls_changed)
@@ -211,6 +301,12 @@ class MainWindow(QMainWindow):
         bar.addWidget(QLabel(" 갭 축 이동평균 "))
         bar.addWidget(self.along_average_spin)
 
+    def _remember_roi(self) -> None:
+        """방금 놓인 ROI를 다음 이미지가 물려받을 수 있게 기억한다."""
+        roi = self.image_view.current_roi()
+        if roi is not None:
+            self._last_roi = roi
+
     def _discard_stale_diagnostics(self) -> None:
         """지금 화면에 있는 것이 더는 현재 조건으로 잰 것이 아니다 — 전부 버린다.
 
@@ -288,6 +384,9 @@ class MainWindow(QMainWindow):
         # 읽게 된다. 이 두 줄이 이 기능에서 가장 위험한 자리다.
         self._profiles_by_index.clear()
         self._measured_rois.clear()
+        # 물려받기는 한 폴더 안에서만 뜻이 있다. 다른 시료로 넘어가면서까지
+        # 끌고 가면 새 폴더의 첫 장이 남의 상자를 쓴 채로 열린다.
+        self._last_roi = None
         self._current = None
 
         for index, path in enumerate(paths):
@@ -323,6 +422,17 @@ class MainWindow(QMainWindow):
         roi = self._measured_rois.get(index)
         released = self._release_angle_lock(record)
 
+        # ROI 우선순위: 잰 적이 있으면 그때의 ROI(Task 22), 아니면 마지막으로
+        # 쓴 ROI, 그것도 없으면 이 이미지의 기본값. 물려받은 것이 이 이미지에
+        # 안 들어가면 모양을 지킨 채 줄이고 그 사실을 말해 준다.
+        shrunk = False
+        if roi is None and self._last_roi is not None:
+            roi, shrunk = fit_roi_to_image(self._last_roi,
+                                           self._pixels[index].shape[:2])
+        elif roi is None:
+            roi = default_roi(self._pixels[index],
+                              self._databar_tops.get(index))
+
         # set_image도 set_roi도 roi_changed를 낸다. 그 신호는 _clear_profile로
         # 이어지고, 그것이 지금 되살리려는 바로 그 보관분을 지운다. 되돌리는
         # 동안만 막되 try/finally로 반드시 되돌린다 — 막힌 채로 남으면 사용자가
@@ -352,6 +462,9 @@ class MainWindow(QMainWindow):
         else:
             self.result_panel.clear()
         message = self._record_notice_line(record) or record.path.name
+        if shrunk:
+            message = (f"{message} | 이미지 크기가 달라 ROI를 줄였습니다 — "
+                       "모양(가로:세로)은 그대로입니다")
         if released:
             message = (f"{message} | 각도 고정을 해제했습니다 — "
                        "이 이미지의 각도로 다시 추정합니다")

@@ -58,6 +58,14 @@ def write_closed_sample(path, dose, noise_sigma=3.0):
     return _write_tif(path, dose, data.astype(np.uint8))
 
 
+def write_horizontal_sample(path, gap_nm, dose):
+    """갭이 가로로 뻗은 합성 SEM TIFF. 사용자의 S/D 패턴이 이 방향이다."""
+    img = synth_gap_image(width=512, height=512, gap_nm=gap_nm, nm_per_px=3.0,
+                          angle_deg=88.0, edge_sigma_px=1.2, noise_sigma=3.0,
+                          seed=int(dose))
+    return _write_tif(path, dose, np.clip(img, 0, 255).astype(np.uint8))
+
+
 def write_sample_with_databar(path, gap_nm, dose, databar_rows=60):
     """스캔 영역 아래에 어두운 데이터바를 붙이고 ResolutionY로 경계를 알린다."""
     scan_rows = 512 - databar_rows
@@ -1259,3 +1267,117 @@ def test_the_angle_spin_box_reaches_the_horizontal_base(qapp):
     for angle_deg in (91.5, -91.5, 180.0, -180.0):
         window.angle_deg_spin.setValue(angle_deg)
         assert window.angle_deg_spin.value() == pytest.approx(angle_deg)
+
+
+def test_an_unmeasured_image_inherits_the_last_used_roi(qapp, folder):
+    """폴더의 이미지들은 배율도 패턴 위치도 같다. 한 번 맞춘 ROI를 장마다
+    다시 끌게 하면 10장짜리 dose 시리즈에서 같은 동작을 열 번 한다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.image_view.set_roi(Roi(100, 400, 800, 480))
+    shaped = window.image_view.current_roi()
+
+    window.select_image(1)                      # 아직 측정 안 한 이미지
+
+    assert window.image_view.current_roi() == shaped
+
+
+def test_a_measured_images_own_roi_still_beats_the_inherited_one(qapp, folder):
+    """우선순위: 측정한 이미지면 그 ROI, 아니면 마지막 ROI, 그것도 없으면 기본값.
+
+    Task 22가 세운 복원이 물려받기에 밀리면, 측정 결과와 화면의 상자가 갈라진
+    채로 오버레이가 그려진다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+    window.image_view.set_roi(Roi(60, 70, 260, 170))
+    window.measure_current()
+    measured = window.image_view.current_roi()
+
+    window.select_image(1)
+    window.image_view.set_roi(Roi(120, 130, 320, 230))
+    later = window.image_view.current_roi()
+    window.select_image(0)
+
+    assert window.image_view.current_roi() == measured
+    assert window.image_view.current_roi() != later
+
+
+def test_an_inherited_roi_keeps_its_shape_on_a_smaller_image(qapp, tmp_path):
+    """작은 이미지에 안 들어가면 줄이되 가로:세로 비율은 지킨다.
+
+    비율을 버리고 잘라 넣으면 측정 방향 폭이 조용히 넓어지거나 좁아져서,
+    사용자가 맞춰 놓은 "갭 두께의 네댓 배"라는 모양이 사라진다. 줄였으면
+    상태 표시줄로 알린다 — 말없이 바뀐 상자는 사용자가 알아채지 못한다.
+    """
+    write_sample(tmp_path, gap_nm=90.0, dose=300)
+    Image.fromarray(np.full((256, 256), 200, dtype=np.uint8)).save(
+        tmp_path / "z_small_400uC.png")
+
+    window = MainWindow()
+    window.open_folder(tmp_path)
+    window.image_view.set_roi(Roi(50, 100, 450, 180))
+    inherited = window.image_view.current_roi()
+
+    window.select_image(1)
+
+    fitted = window.image_view.current_roi()
+    assert fitted.x1 < 256 and fitted.y1 < 256
+    assert fitted.width / fitted.height == pytest.approx(
+        inherited.width / inherited.height, rel=0.05)
+    assert "ROI" in window.status_text()
+
+
+def test_the_default_roi_is_long_along_a_vertical_gap(qapp, folder):
+    """첫 이미지에는 물려받을 ROI가 없다. 그때라도 갭 모양에 맞춘 상자여야 한다.
+
+    정사각형은 갭 축 방향으로는 짧아 라인 수가 모자라고, 측정 방향으로는
+    쓸데없이 넓어 옆 패턴까지 끌어들인다. 사용자가 매 장 손으로 늘리던 것이
+    바로 이 모양이다.
+    """
+    window = MainWindow()
+    window.open_folder(folder)
+
+    roi = window.image_view.current_roi()
+    assert roi.height > roi.width * 2, f"세로 갭인데 상자가 {roi}"
+
+
+def test_a_horizontal_gap_gets_a_wide_default_roi(qapp, tmp_path):
+    """갭이 가로면 가로로 긴 상자다. 방향을 잘못 고르면 값까지 틀린다."""
+    write_horizontal_sample(tmp_path, gap_nm=90.0, dose=300)
+    window = MainWindow()
+    window.open_folder(tmp_path)
+
+    roi = window.image_view.current_roi()
+    assert roi.width > roi.height * 2, f"가로 갭인데 상자가 {roi}"
+
+    window.measure_current()
+    assert window.session.records[0].roi_results[0].mean_nm == pytest.approx(
+        90.0, abs=3.0)
+
+
+def test_the_default_roi_stays_clear_of_the_databar(qapp, tmp_path):
+    """기본 ROI가 데이터바를 침범하면 폴더를 연 직후 측정이 거부된다.
+
+    첫 화면에서 "다시 잡으세요"만 나오는 프로그램은 쓸 수 없다. 긴 쪽을 잡을
+    때 데이터바 위쪽만 이미지로 친다.
+
+    상자가 데이터바를 피했는지만 보면 부족하다. 데이터바를 포함한 채 방향을
+    판별하면 균일한 어두운 띠가 세로 방향 대비를 키워 "가로 갭"으로 뒤집히고,
+    그때 나오는 납작한 상자는 우연히 데이터바 위에 앉는다 — 거부는 피하지만
+    세로 갭을 가로로 재는 상자다. 그래서 모양까지 함께 못박는다.
+    """
+    write_sample_with_databar(tmp_path, gap_nm=90.0, dose=300,
+                              databar_rows=220)
+    window = MainWindow()
+    window.open_folder(tmp_path)
+
+    roi = window.image_view.current_roi()
+    assert roi.y1 < 292, f"데이터바는 292행부터다: {roi}"
+    assert roi.height > roi.width * 2, f"세로 갭인데 상자가 {roi}"
+
+    window.measure_current()
+
+    assert "데이터바" not in window.status_text(), window.status_text()
+    assert window.session.records[0].roi_results
