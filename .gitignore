@@ -22,3 +22,6 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# humanize-korean 작업 폴더
+_workspace/
