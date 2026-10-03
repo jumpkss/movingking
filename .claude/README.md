@@ -9,6 +9,9 @@
 |---|---|
 | `skills/` | Superpowers 스킬 14종 (Claude가 읽는 작업 매뉴얼) |
 | `SUPERPOWERS-LICENSE.txt` | 원저작자 MIT 라이선스 전문 |
+| `vendor/im-not-ai/` | humanize-korean 플러그인 원본 (스킬·에이전트·스크립트·라이선스) |
+| `skills/humanize*` | 위 원본의 스킬 4종을 가리키는 심링크 |
+| `agents/*.md` | 위 원본의 서브에이전트 4종을 가리키는 심링크 |
 
 ## 출처
 
@@ -18,6 +21,40 @@
 - 라이선스: MIT (`SUPERPOWERS-LICENSE.txt` 참조)
 
 `skills/` 아래 파일은 위 저장소에서 그대로 복사한 것이며 수정하지 않았습니다.
+
+## humanize-korean (한글 AI 티 제거기)
+
+- 프로젝트: im-not-ai — https://github.com/epoko77-ai/im-not-ai
+- 버전: 2.3.2 (커밋 `2f3d943`)
+- 저작자: epoko77-ai
+- 라이선스: MIT (`vendor/im-not-ai/LICENSE` 참조)
+- 사용법: `/humanize-korean` (전수 윤문), `/humanize-scan` (AI 티 점수만 확인),
+  또는 "이 글 AI 티 없애줘"처럼 자연어로 요청
+
+원본에서 `.claude-plugin/`, `skills/`, `agents/`, `scripts/`, `LICENSE`만 그대로
+복사했고 수정하지 않았습니다.
+
+Superpowers처럼 `skills/`에 바로 복사하지 않고 `vendor/`에 두고 심링크로 연결한
+이유: 이 스킬은 `.claude-plugin/` 폴더가 나올 때까지 경로를 거슬러 올라가
+`scripts/`(정량 채점·검증 게이트)를 찾습니다. 스킬 폴더만 복사하면 이 탐색이
+실패해 게이트가 동작하지 않습니다. 원본 `install.sh`도 같은 이유로 심링크를
+씁니다. 서브에이전트는 `install.sh` 기본값과 같은 4종만 연결했습니다.
+
+윤문 작업 폴더 `_workspace/`는 `.gitignore`에 추가했습니다.
+
+갱신하려면:
+
+```bash
+git clone --depth 1 https://github.com/epoko77-ai/im-not-ai /tmp/im-not-ai
+rm -rf .claude/vendor/im-not-ai && mkdir -p .claude/vendor/im-not-ai
+cp -r /tmp/im-not-ai/{.claude-plugin,skills,agents,scripts,LICENSE} .claude/vendor/im-not-ai/
+```
+
+새 버전에서 스킬·에이전트 이름이 바뀌었으면 심링크도 맞춰 주세요. 제거하려면
+`.claude/vendor/im-not-ai/`, `.claude/skills/humanize*`, `.claude/agents/`를 지우면 됩니다.
+
+> 주의: Superpowers 갱신 절차의 `rm -rf .claude/skills`는 humanize 심링크까지
+> 지웁니다. 갱신 뒤 심링크를 다시 만들어 주세요.
 
 ## 왜 플러그인 설치가 아니라 복사인가
 
