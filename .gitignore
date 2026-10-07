@@ -22,3 +22,6 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# humanize-korean 윤문 작업 폴더 (스킬이 cwd에 생성)
+_workspace/
